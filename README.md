@@ -1,7 +1,7 @@
 # Wellness App
-1) Goal (1–2 sentences) 
+1) Goal
 	Wellness center appointment booking system with a focus on variety-seeking health enthusiasts booking different services such as gym-time, pilates classes, spa treatments, and massages with different duration options. 
-2) Roles & Permissions (Minimum: 2 roles) 
+2) Roles & Permissions
 Role 1: Admin
 • Approve/Reject appointment requests
 • Check room availability and keep schedule updated
@@ -10,7 +10,7 @@ Role 2:  User
 • Log into account and use verified profile to book appointments/services
 • Submit appointment request
 • Change appointment date/time or cancel an existing appointment 
-3) Core Features (5–8 items) 
+3) Core Features 
 Register for an account as either an admin or a client/user and log in to manage personal data
 Admin can create, update, and delete services and change or set service durations
 Users can view their completed and upcoming appointments
@@ -18,7 +18,7 @@ Users can add ratings and/or comments to services they have completed
 Users can manage upcoming appointments to address any possible overlapping time slots
 Admin can deactivate a user’s membership status after a service is complete
 
-4) Pages / Views (Minimum: 5) 
+4) Pages / Views 
 1. Login / Register with valid membership
 2. Choose service
 3. Choose date and time
@@ -26,8 +26,7 @@ Admin can deactivate a user’s membership status after a service is complete
 5. Previous and upcoming bookings 
 6. Class/services reviews in chronological list
 
-5) Data Tables (Draft Only) (Minimum: 4 tables) 
-Just list table names and a few key fields (no advanced DB knowledge needed). 
+5) Data Tables listed
 Table/Collection 
 Key Fields (examples)
   1) Users 
@@ -41,8 +40,7 @@ id, request_id, service_id, time_slot, status (Pending/Accepted/ Rejected), crea
 
 Relationship idea (1 line): A user submits a service request for approval by the admin. 
 
-7) Team Plan + Risks (Required) 
-Work split (who does what): 
+7) Team Plan + Risks: 
 • Christina: Frontend (Service selection pages, date/time selection, user profile and booking history pages).
 • Vitoria: Backend (Database design (users, services, requests), appointment booking logic and conflict handling, admin approval/rejection workflow).
 
@@ -52,6 +50,5 @@ Plan: Validate time slots on the backend before confirming bookings and block al
 2. Risk: Users may try to book services without a valid membership or approval.
 Plan: Require verification for memberships before allowing booking requests and restrict admin actions to admin-only routes.
 
-Unique Feature (1 sentence) 
 Our unique feature is: A service-based booking system that allows users to choose different service types with customizable duration options while preventing scheduling conflicts through admin approval. 
 Mini Example: Wellness booking app: Roles = Admin/User; pages = Choose Service, Choose Time, My Bookings, Admin Dashboard; analytics = number of bookings per service.
