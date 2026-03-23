@@ -24,3 +24,7 @@ Thumbs.db
 
 # Database files
 *.sqlite3
+
+# Node
+node_modules/
+dist/
