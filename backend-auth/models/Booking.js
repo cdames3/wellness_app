@@ -23,6 +23,31 @@ const bookingSchema = new mongoose.Schema(
       ref: 'Service',
       required: true,
     },
+    locationId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    locationName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    locationAddress: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    instructorName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    slotTime: {
+      type: String,
+      required: true,
+      trim: true,
+    },
     appointmentDate: {
       type: Date,
       required: true,

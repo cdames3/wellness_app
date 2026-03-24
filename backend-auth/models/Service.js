@@ -1,5 +1,82 @@
 const mongoose = require('mongoose');
 
+const serviceLocationSchema = new mongoose.Schema(
+  {
+    id: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    address: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    instructors: {
+      type: [String],
+      default: [],
+    },
+  },
+  { _id: false }
+);
+
+const serviceScheduleSchema = new mongoose.Schema(
+  {
+    startHour: {
+      type: Number,
+      required: true,
+      default: 6,
+    },
+    endHour: {
+      type: Number,
+      required: true,
+      default: 20,
+    },
+    intervalMinutes: {
+      type: Number,
+      required: true,
+      default: 60,
+    },
+  },
+  { _id: false }
+);
+
+const scheduleOverrideSchema = new mongoose.Schema(
+  {
+    id: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    date: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    time: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    locationId: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    instructorName: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
 const serviceSchema = new mongoose.Schema(
   {
     name: {
@@ -28,6 +105,27 @@ const serviceSchema = new mongoose.Schema(
       required: true,
       min: 1,
       default: 1,
+    },
+    bookingMode: {
+      type: String,
+      enum: ['self-led', 'instructor-led'],
+      default: 'instructor-led',
+    },
+    schedule: {
+      type: serviceScheduleSchema,
+      default: () => ({
+        startHour: 6,
+        endHour: 20,
+        intervalMinutes: 60,
+      }),
+    },
+    locations: {
+      type: [serviceLocationSchema],
+      default: [],
+    },
+    scheduleOverrides: {
+      type: [scheduleOverrideSchema],
+      default: [],
     },
     active: {
       type: Boolean,

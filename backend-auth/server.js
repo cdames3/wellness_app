@@ -1,6 +1,8 @@
 const express = require('express');
+const http = require('http');
 const mongoose = require('mongoose');
-const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 const { randomUUID, scryptSync, timingSafeEqual } = require('crypto');
 require('dotenv').config();
 const Service = require('./models/Service');
@@ -9,12 +11,68 @@ const User = require('./models/User');
 const Review = require('./models/Review');
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
+const DEMO_DATA_PATH = path.join(__dirname, 'data', 'demo-data.json');
 const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
+
+const studioLocations = [
+  {
+    id: 'atlanta-buckhead',
+    name: 'Atlanta',
+    address: '1458 Peachtree Square NE, Atlanta, GA 30309',
+  },
+  {
+    id: 'sandy-springs',
+    name: 'Sandy Springs',
+    address: '6120 Roswell Road, Sandy Springs, GA 30328',
+  },
+  {
+    id: 'peachtree-corners',
+    name: 'Peachtree Corners',
+    address: '4980 Medlock Bridge Road, Peachtree Corners, GA 30092',
+  },
+  {
+    id: 'lawrenceville',
+    name: 'Lawrenceville',
+    address: '875 Grayson Highway, Lawrenceville, GA 30046',
+  },
+  {
+    id: 'duluth',
+    name: 'Duluth',
+    address: '3200 Satellite Boulevard, Duluth, GA 30096',
+  },
+  {
+    id: 'roswell',
+    name: 'Roswell',
+    address: '1145 Canton Street, Roswell, GA 30075',
+  },
+  {
+    id: 'alpharetta',
+    name: 'Alpharetta',
+    address: '2200 Avalon Boulevard, Alpharetta, GA 30009',
+  },
+];
+
+function createLocations(instructors = []) {
+  return studioLocations.map((location, index) => ({
+    ...location,
+    instructors: instructors[index % instructors.length] || instructors,
+  }));
+}
+
+function createServiceConfig({ bookingMode, startHour, endHour, intervalMinutes, instructors }) {
+  return {
+    bookingMode,
+    schedule: { startHour, endHour, intervalMinutes },
+    locations: bookingMode === 'self-led' ? createLocations([]) : createLocations(instructors),
+    scheduleOverrides: [],
+  };
+}
 
 const defaultServices = [
   {
@@ -23,6 +81,21 @@ const defaultServices = [
     durationMinutes: 60,
     category: 'Class',
     capacity: 8,
+    ...createServiceConfig({
+      bookingMode: 'instructor-led',
+      startHour: 6,
+      endHour: 20,
+      intervalMinutes: 90,
+      instructors: [
+        ['Ashley Monroe', 'Maria Torres'],
+        ['Ashley Monroe', 'Nina Brooks'],
+        ['Maria Torres', 'Leah Bryant'],
+        ['Leah Bryant', 'Sofia Bennett'],
+        ['Nina Brooks', 'Maria Torres'],
+        ['Ashley Monroe', 'Sofia Bennett'],
+        ['Leah Bryant', 'Nina Brooks'],
+      ],
+    }),
   },
   {
     name: 'Deep Tissue Massage',
@@ -30,6 +103,21 @@ const defaultServices = [
     durationMinutes: 60,
     category: 'Massage',
     capacity: 3,
+    ...createServiceConfig({
+      bookingMode: 'instructor-led',
+      startHour: 9,
+      endHour: 18,
+      intervalMinutes: 60,
+      instructors: [
+        ['Jasmine Cole', 'Elena Hart'],
+        ['Jasmine Cole', 'Riley Scott'],
+        ['Elena Hart', 'Ava Coleman'],
+        ['Riley Scott', 'Jasmine Cole'],
+        ['Ava Coleman', 'Elena Hart'],
+        ['Riley Scott', 'Ava Coleman'],
+        ['Jasmine Cole', 'Elena Hart'],
+      ],
+    }),
   },
   {
     name: 'Spa Reset',
@@ -37,6 +125,21 @@ const defaultServices = [
     durationMinutes: 45,
     category: 'Spa',
     capacity: 4,
+    ...createServiceConfig({
+      bookingMode: 'instructor-led',
+      startHour: 10,
+      endHour: 19,
+      intervalMinutes: 45,
+      instructors: [
+        ['Camila Reed', 'Olivia Stone'],
+        ['Olivia Stone', 'Mia Larson'],
+        ['Camila Reed', 'Mia Larson'],
+        ['Olivia Stone', 'Zoe Harper'],
+        ['Zoe Harper', 'Camila Reed'],
+        ['Mia Larson', 'Olivia Stone'],
+        ['Camila Reed', 'Zoe Harper'],
+      ],
+    }),
   },
   {
     name: 'Open Gym Session',
@@ -44,6 +147,13 @@ const defaultServices = [
     durationMinutes: 90,
     category: 'Fitness',
     capacity: 12,
+    ...createServiceConfig({
+      bookingMode: 'self-led',
+      startHour: 6,
+      endHour: 24,
+      intervalMinutes: 30,
+      instructors: [],
+    }),
   },
 ];
 
@@ -55,66 +165,247 @@ const demoAdmin = {
   role: 'admin',
 };
 
+const demoMember = {
+  name: 'Vitoria Test',
+  email: 'vitoria.test@example.com',
+  password: 'test1234',
+  membershipNumber: 'MEM-1001',
+  role: 'user',
+};
+
 let databaseReady = false;
 const sessions = new Map();
-const memoryServices = defaultServices.map((service) => ({
+let memoryServices = defaultServices.map((service) => ({
   ...service,
   _id: randomUUID(),
   active: true,
 }));
-const memoryBookings = [];
-const memoryUsers = [];
-const memoryReviews = [];
+let memoryBookings = [];
+let memoryUsers = [];
+let memoryReviews = [];
+
+function getDefaultServiceConfig(service) {
+  if (String(service?.name).toLowerCase().includes('gym')) {
+    return createServiceConfig({
+      bookingMode: 'self-led',
+      startHour: 6,
+      endHour: 24,
+      intervalMinutes: 30,
+      instructors: [],
+    });
+  }
+
+  if (String(service?.name).toLowerCase().includes('pilates')) {
+    return createServiceConfig({
+      bookingMode: 'instructor-led',
+      startHour: 6,
+      endHour: 20,
+      intervalMinutes: 90,
+      instructors: [['Ashley Monroe', 'Maria Torres']],
+    });
+  }
+
+  if (String(service?.category).toLowerCase().includes('massage')) {
+    return createServiceConfig({
+      bookingMode: 'instructor-led',
+      startHour: 9,
+      endHour: 18,
+      intervalMinutes: 60,
+      instructors: [['Jasmine Cole', 'Elena Hart']],
+    });
+  }
+
+  return createServiceConfig({
+    bookingMode: 'instructor-led',
+    startHour: 10,
+    endHour: 19,
+    intervalMinutes: 45,
+    instructors: [['Camila Reed', 'Olivia Stone']],
+  });
+}
+
+function withServiceDefaults(service) {
+  if (!service) {
+    return null;
+  }
+
+  const fallback = getDefaultServiceConfig(service);
+  const plainService = typeof service.toObject === 'function' ? service.toObject() : { ...service };
+
+  return {
+    ...plainService,
+    bookingMode: plainService.bookingMode || fallback.bookingMode,
+    schedule: {
+      ...fallback.schedule,
+      ...(plainService.schedule || {}),
+    },
+    locations: Array.isArray(plainService.locations) && plainService.locations.length > 0
+      ? plainService.locations.map((location) => ({
+          ...location,
+          instructors: Array.isArray(location.instructors) ? location.instructors : [],
+        }))
+      : fallback.locations,
+    scheduleOverrides: Array.isArray(plainService.scheduleOverrides) ? plainService.scheduleOverrides : [],
+  };
+}
+
+function formatTimeLabel(timeValue) {
+  const [hourValue, minuteValue] = String(timeValue).split(':').map(Number);
+  const period = hourValue >= 12 ? 'PM' : 'AM';
+  const normalizedHour = hourValue % 12 === 0 ? 12 : hourValue % 12;
+  const paddedMinutes = String(minuteValue).padStart(2, '0');
+  return `${normalizedHour}:${paddedMinutes} ${period}`;
+}
+
+function buildAppointmentDate(date, time) {
+  return new Date(`${date}T${time}:00`);
+}
+
+function loadDemoState() {
+  try {
+    if (!fs.existsSync(DEMO_DATA_PATH)) {
+      return;
+    }
+
+    const raw = fs.readFileSync(DEMO_DATA_PATH, 'utf8');
+    if (!raw.trim()) {
+      return;
+    }
+
+    const data = JSON.parse(raw);
+    memoryServices = Array.isArray(data.services) && data.services.length > 0
+      ? data.services.map(withServiceDefaults)
+      : memoryServices;
+    memoryBookings = Array.isArray(data.bookings) ? data.bookings : [];
+    memoryUsers = Array.isArray(data.users) ? data.users : [];
+    memoryReviews = Array.isArray(data.reviews) ? data.reviews : [];
+  } catch (error) {
+    console.warn(`Unable to load demo data. Starting with fresh in-memory state. (${error.message})`);
+  }
+}
+
+function persistDemoState() {
+  if (databaseReady) {
+    return;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(DEMO_DATA_PATH), { recursive: true });
+    fs.writeFileSync(
+      DEMO_DATA_PATH,
+      JSON.stringify(
+        {
+          services: memoryServices,
+          bookings: memoryBookings,
+          users: memoryUsers,
+          reviews: memoryReviews,
+        },
+        null,
+        2
+      )
+    );
+  } catch (error) {
+    console.warn(`Unable to persist demo data. (${error.message})`);
+  }
+}
+
+function generateServiceSlots(serviceInput, date, locationId) {
+  const service = withServiceDefaults(serviceInput);
+  const schedule = service.schedule;
+  const locations = service.locations || [];
+  const selectedLocation = locations.find((location) => location.id === locationId) || locations[0];
+  const instructors = Array.isArray(selectedLocation?.instructors) ? selectedLocation.instructors : [];
+  const slotCount = Math.max(0, ((schedule.endHour - schedule.startHour) * 60) / schedule.intervalMinutes);
+
+  return Array.from({ length: slotCount }, (_, index) => {
+    const totalMinutes = schedule.startHour * 60 + index * schedule.intervalMinutes;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    const matchingOverride = service.scheduleOverrides.find(
+      (override) =>
+        override.date === date &&
+        override.time === time &&
+        override.locationId === selectedLocation?.id
+    );
+    const defaultInstructor =
+      service.bookingMode === 'self-led'
+        ? ''
+        : matchingOverride?.instructorName || instructors[index % Math.max(instructors.length, 1)] || '';
+
+    return {
+      time,
+      label: formatTimeLabel(time),
+      instructorName: defaultInstructor,
+      instructorOptions: instructors,
+    };
+  });
+}
 
 async function listServices(includeInactive = false) {
   if (databaseReady) {
     const query = includeInactive ? {} : { active: true };
-    return Service.find(query).sort({ createdAt: 1 });
+    const services = await Service.find(query).sort({ createdAt: 1 });
+    return services.map(withServiceDefaults);
   }
 
-  return memoryServices.filter((service) => (includeInactive ? true : service.active));
+  return memoryServices
+    .filter((service) => (includeInactive ? true : service.active))
+    .map(withServiceDefaults);
 }
 
 async function findServiceById(id) {
   return databaseReady
-    ? Service.findById(id)
-    : memoryServices.find((service) => service._id === id) || null;
+    ? withServiceDefaults(await Service.findById(id))
+    : withServiceDefaults(memoryServices.find((service) => service._id === id) || null);
 }
 
 async function createService(serviceData) {
-  return databaseReady ? Service.create(serviceData) : (() => {
+  return databaseReady ? withServiceDefaults(await Service.create(serviceData)) : (() => {
     const service = {
       _id: randomUUID(),
       ...serviceData,
       active: serviceData.active ?? true,
     };
     memoryServices.push(service);
-    return service;
+    persistDemoState();
+    return withServiceDefaults(service);
   })();
 }
 
 async function updateServiceById(id, updates) {
   return databaseReady
-    ? Service.findByIdAndUpdate(id, updates, { new: true })
+    ? withServiceDefaults(await Service.findByIdAndUpdate(id, updates, { new: true }))
     : (() => {
         const service = memoryServices.find((item) => item._id === id);
         if (!service) {
           return null;
         }
         Object.assign(service, updates);
-        return service;
+        persistDemoState();
+        return withServiceDefaults(service);
       })();
 }
 
 async function listReviews() {
   return databaseReady
-    ? Review.find().populate('service').sort({ createdAt: -1 })
+    ? (await Review.find().populate('service').sort({ createdAt: -1 })).map((review) => ({
+        ...review.toObject(),
+        service: withServiceDefaults(review.service),
+      }))
     : [...memoryReviews].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
 async function findBookingById(id) {
   return databaseReady
-    ? Booking.findById(id).populate('service')
+    ? (() => Booking.findById(id).populate('service').then((booking) => (
+        booking
+          ? {
+              ...booking.toObject(),
+              service: withServiceDefaults(booking.service),
+            }
+          : null
+      )))()
     : memoryBookings.find((booking) => booking._id === id) || null;
 }
 
@@ -127,6 +418,7 @@ async function createReview(reviewData) {
       updatedAt: new Date().toISOString(),
     };
     memoryReviews.push(review);
+    persistDemoState();
     return review;
   })();
 }
@@ -197,6 +489,7 @@ async function createUser(userData) {
       membershipActive: userData.membershipActive ?? true,
     };
     memoryUsers.push(user);
+    persistDemoState();
     return user;
   })();
 }
@@ -210,6 +503,7 @@ async function updateUserById(id, updates) {
           return null;
         }
         Object.assign(user, updates);
+        persistDemoState();
         return user;
       })();
 }
@@ -246,17 +540,24 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin || corsOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+app.use((req, res, next) => {
+  const requestOrigin = req.headers.origin;
+  const allowedOrigin =
+    !requestOrigin || corsOrigins.includes(requestOrigin) ? requestOrigin : corsOrigins[0];
 
-      return callback(new Error('Not allowed by CORS'));
-    },
-  })
-);
+  if (allowedOrigin) {
+    res.header('Access-Control-Allow-Origin', allowedOrigin);
+  }
+
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  return next();
+});
 app.use(express.json());
 
 async function seedServices() {
@@ -268,7 +569,7 @@ async function seedServices() {
   }
 }
 
-async function seedAdminUser() {
+async function seedDemoUsers() {
   const existingAdmin = await findUserByEmail(demoAdmin.email);
   if (!existingAdmin) {
     await createUser({
@@ -281,12 +582,27 @@ async function seedAdminUser() {
     });
     console.log('Seeded demo admin account');
   }
+
+  const existingMember = await findUserByEmail(demoMember.email);
+  if (!existingMember) {
+    await createUser({
+      name: demoMember.name,
+      email: demoMember.email,
+      passwordHash: hashPassword(demoMember.password),
+      role: demoMember.role,
+      membershipNumber: demoMember.membershipNumber,
+      membershipActive: true,
+    });
+    console.log('Seeded demo member account');
+  }
 }
 
 async function connectDatabase() {
   if (!MONGO_URI) {
     console.warn('MONGO_URI is missing. Starting in demo mode with in-memory data.');
-    await seedAdminUser();
+    loadDemoState();
+    await seedDemoUsers();
+    persistDemoState();
     return;
   }
 
@@ -295,10 +611,12 @@ async function connectDatabase() {
     databaseReady = true;
     console.log('Connected to Wellness database');
     await seedServices();
-    await seedAdminUser();
+    await seedDemoUsers();
   } catch (error) {
     console.warn(`Database connection failed. Starting in demo mode instead. (${error.message})`);
-    await seedAdminUser();
+    loadDemoState();
+    await seedDemoUsers();
+    persistDemoState();
   }
 }
 
@@ -367,7 +685,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
 
 app.patch('/api/auth/me', requireAuth, async (req, res) => {
   try {
-    const { name, membershipNumber, membershipActive } = req.body;
+    const { name, membershipNumber, membershipActive, email, currentPassword, newPassword } = req.body;
     const updates = {};
 
     if (typeof name === 'string' && name.trim()) {
@@ -382,6 +700,41 @@ app.patch('/api/auth/me', requireAuth, async (req, res) => {
       updates.membershipActive = membershipActive;
     }
 
+    if (typeof email === 'string' && email.trim() && email.trim().toLowerCase() !== req.user.email) {
+      if (!currentPassword) {
+        return res.status(400).json({ message: 'Please confirm your current password before changing your email.' });
+      }
+
+      const existingUser = await findUserByEmail(email);
+      if (existingUser && String(existingUser._id) !== String(req.user._id)) {
+        return res.status(409).json({ message: 'That email is already being used by another account.' });
+      }
+
+      const fullUser = await findUserById(req.user._id);
+      if (!fullUser || !verifyPassword(currentPassword, fullUser.passwordHash)) {
+        return res.status(401).json({ message: 'Your current password is incorrect.' });
+      }
+
+      updates.email = email.trim().toLowerCase();
+    }
+
+    if (typeof newPassword === 'string' && newPassword.trim()) {
+      if (!currentPassword) {
+        return res.status(400).json({ message: 'Please confirm your current password before setting a new one.' });
+      }
+
+      const fullUser = await findUserById(req.user._id);
+      if (!fullUser || !verifyPassword(currentPassword, fullUser.passwordHash)) {
+        return res.status(401).json({ message: 'Your current password is incorrect.' });
+      }
+
+      if (newPassword.trim().length < 8) {
+        return res.status(400).json({ message: 'Your new password should be at least 8 characters long.' });
+      }
+
+      updates.passwordHash = hashPassword(newPassword.trim());
+    }
+
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ message: 'Please provide at least one profile change.' });
     }
@@ -389,6 +742,11 @@ app.patch('/api/auth/me', requireAuth, async (req, res) => {
     const updatedUser = await updateUserById(req.user._id, updates);
     if (!updatedUser) {
       return res.status(404).json({ message: 'User profile not found.' });
+    }
+
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.headers['x-auth-token'];
+    if (token) {
+      sessions.set(token, sanitizeUser(updatedUser));
     }
 
     return res.json({ user: sanitizeUser(updatedUser) });
@@ -403,6 +761,30 @@ app.get('/api/services', async (req, res) => {
     res.json(services);
   } catch (error) {
     res.status(500).json({ message: 'Unable to load services right now.' });
+  }
+});
+
+app.get('/api/services/:id/availability', async (req, res) => {
+  try {
+    const { date, locationId } = req.query;
+    if (!date) {
+      return res.status(400).json({ message: 'Please choose a date first.' });
+    }
+
+    const service = await findServiceById(req.params.id);
+    if (!service || !service.active) {
+      return res.status(404).json({ message: 'Selected service was not found.' });
+    }
+
+    const slots = generateServiceSlots(service, String(date), String(locationId || ''));
+    return res.json({
+      serviceId: service._id,
+      bookingMode: service.bookingMode,
+      locations: service.locations,
+      slots,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to load service availability right now.' });
   }
 });
 
@@ -432,12 +814,17 @@ app.post('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
       return res.status(400).json({ message: 'All service fields are required.' });
     }
 
+    const defaults = getDefaultServiceConfig({ name, category });
     const service = await createService({
       name: String(name).trim(),
       description: String(description).trim(),
       durationMinutes: Number(durationMinutes),
       category: String(category).trim(),
       capacity: Number(capacity),
+      bookingMode: defaults.bookingMode,
+      schedule: defaults.schedule,
+      locations: defaults.locations,
+      scheduleOverrides: [],
       active: true,
     });
 
@@ -449,7 +836,7 @@ app.post('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
 
 app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { name, description, durationMinutes, category, capacity, active } = req.body;
+    const { name, description, durationMinutes, category, capacity, active, bookingMode, schedule, locations } = req.body;
     const updates = {};
 
     if (typeof name === 'string' && name.trim()) {
@@ -476,6 +863,27 @@ app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res)
       updates.active = active;
     }
 
+    if (typeof bookingMode === 'string' && ['self-led', 'instructor-led'].includes(bookingMode)) {
+      updates.bookingMode = bookingMode;
+    }
+
+    if (schedule && typeof schedule === 'object') {
+      updates.schedule = {
+        startHour: Number(schedule.startHour),
+        endHour: Number(schedule.endHour),
+        intervalMinutes: Number(schedule.intervalMinutes),
+      };
+    }
+
+    if (Array.isArray(locations)) {
+      updates.locations = locations.map((location) => ({
+        id: String(location.id),
+        name: String(location.name),
+        address: String(location.address),
+        instructors: Array.isArray(location.instructors) ? location.instructors.map((item) => String(item).trim()).filter(Boolean) : [],
+      }));
+    }
+
     const updatedService = await updateServiceById(req.params.id, updates);
     if (!updatedService) {
       return res.status(404).json({ message: 'Service not found.' });
@@ -484,6 +892,70 @@ app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res)
     return res.json(updatedService);
   } catch (error) {
     return res.status(500).json({ message: 'Unable to update the service right now.' });
+  }
+});
+
+app.post('/api/admin/services/:id/overrides', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { date, time, locationId, instructorName } = req.body;
+    if (!date || !time || !locationId || !instructorName) {
+      return res.status(400).json({ message: 'Date, time, location, and instructor are required.' });
+    }
+
+    const service = databaseReady ? await Service.findById(req.params.id) : memoryServices.find((item) => item._id === req.params.id);
+    if (!service) {
+      return res.status(404).json({ message: 'Service not found.' });
+    }
+
+    const shapedService = withServiceDefaults(service);
+    const location = shapedService.locations.find((item) => item.id === locationId);
+    if (!location) {
+      return res.status(404).json({ message: 'Location not found for this service.' });
+    }
+
+    if (!location.instructors.includes(instructorName)) {
+      return res.status(400).json({ message: 'That instructor is not assigned to the selected location.' });
+    }
+
+    const allowedTimes = generateServiceSlots(shapedService, String(date), locationId).map((slot) => slot.time);
+    if (!allowedTimes.includes(time)) {
+      return res.status(400).json({ message: 'That time is not available for this service schedule.' });
+    }
+
+    const override = {
+      id: randomUUID(),
+      date: String(date),
+      time: String(time),
+      locationId: String(locationId),
+      instructorName: String(instructorName).trim(),
+    };
+
+    const existingOverrides = Array.isArray(service.scheduleOverrides) ? service.scheduleOverrides : [];
+    const filteredOverrides = existingOverrides.filter(
+      (item) => !(item.date === override.date && item.time === override.time && item.locationId === override.locationId)
+    );
+    filteredOverrides.push(override);
+
+    const updatedService = await updateServiceById(req.params.id, { scheduleOverrides: filteredOverrides });
+    return res.json(updatedService);
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to save the instructor override right now.' });
+  }
+});
+
+app.delete('/api/admin/services/:id/overrides/:overrideId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const service = databaseReady ? await Service.findById(req.params.id) : memoryServices.find((item) => item._id === req.params.id);
+    if (!service) {
+      return res.status(404).json({ message: 'Service not found.' });
+    }
+
+    const existingOverrides = Array.isArray(service.scheduleOverrides) ? service.scheduleOverrides : [];
+    const nextOverrides = existingOverrides.filter((item) => item.id !== req.params.overrideId);
+    const updatedService = await updateServiceById(req.params.id, { scheduleOverrides: nextOverrides });
+    return res.json(updatedService);
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to remove that override right now.' });
   }
 });
 
@@ -504,7 +976,10 @@ app.get('/api/bookings', requireAuth, async (req, res) => {
   try {
     const query = req.user.role === 'admin' ? {} : { email: req.user.email };
     const bookings = databaseReady
-      ? await Booking.find(query).populate('service').sort({ appointmentDate: 1, createdAt: -1 })
+      ? (await Booking.find(query).populate('service').sort({ appointmentDate: 1, createdAt: -1 })).map((booking) => ({
+          ...booking.toObject(),
+          service: withServiceDefaults(booking.service),
+        }))
       : memoryBookings
           .filter((booking) => (req.user.role === 'admin' ? true : booking.email === req.user.email))
           .sort((a, b) => new Date(a.appointmentDate) - new Date(b.appointmentDate));
@@ -517,24 +992,40 @@ app.get('/api/bookings', requireAuth, async (req, res) => {
 
 app.post('/api/bookings', requireAuth, async (req, res) => {
   try {
-    const { serviceId, appointmentDate, notes = '' } = req.body;
+    const { serviceId, bookingDate, slotTime, locationId, instructorName = '', notes = '' } = req.body;
 
     if (!req.user.membershipActive) {
       return res.status(403).json({ message: 'Your membership is inactive. Please contact the wellness center.' });
     }
 
-    if (!serviceId || !appointmentDate) {
-      return res.status(400).json({ message: 'Please choose a service and appointment time.' });
+    if (!serviceId || !bookingDate || !slotTime || !locationId) {
+      return res.status(400).json({ message: 'Please choose a service, location, and time.' });
     }
 
-    const service = databaseReady
-      ? await Service.findById(serviceId)
-      : memoryServices.find((item) => item._id === serviceId);
+    const service = await findServiceById(serviceId);
     if (!service) {
       return res.status(404).json({ message: 'Selected service was not found.' });
     }
 
-    const appointment = new Date(appointmentDate);
+    const location = service.locations.find((item) => item.id === locationId);
+    if (!location) {
+      return res.status(404).json({ message: 'Selected location was not found for this service.' });
+    }
+
+    const validSlots = generateServiceSlots(service, String(bookingDate), locationId);
+    const selectedSlot = validSlots.find((slot) => slot.time === slotTime);
+    if (!selectedSlot) {
+      return res.status(400).json({ message: 'That class time is not available for the selected service.' });
+    }
+
+    if (service.bookingMode === 'instructor-led') {
+      const validInstructorNames = selectedSlot.instructorOptions;
+      if (!instructorName || !validInstructorNames.includes(instructorName)) {
+        return res.status(400).json({ message: 'Please choose a valid instructor for this class.' });
+      }
+    }
+
+    const appointment = buildAppointmentDate(bookingDate, slotTime);
     if (Number.isNaN(appointment.getTime())) {
       return res.status(400).json({ message: 'Appointment date is invalid.' });
     }
@@ -545,19 +1036,17 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
     const overlappingApprovedOrPending = databaseReady
       ? await Booking.countDocuments({
           service: service._id,
+          locationId,
           status: { $in: ['Pending', 'Approved'] },
-          appointmentDate: {
-            $gte: startWindow,
-            $lt: endWindow,
-          },
+          appointmentDate: startWindow,
         })
       : memoryBookings.filter((booking) => {
-          const bookingDate = new Date(booking.appointmentDate);
+          const bookingDateTime = new Date(booking.appointmentDate);
           return (
-            booking.service._id === service._id &&
+            String(booking.service._id || booking.service) === String(service._id) &&
+            booking.locationId === locationId &&
             ['Pending', 'Approved'].includes(booking.status) &&
-            bookingDate >= startWindow &&
-            bookingDate < endWindow
+            bookingDateTime.getTime() === startWindow.getTime()
           );
         }).length;
 
@@ -574,11 +1063,20 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
             email: req.user.email,
             membershipNumber: req.user.membershipNumber,
             service: service._id,
+            locationId: location.id,
+            locationName: location.name,
+            locationAddress: location.address,
+            instructorName: service.bookingMode === 'self-led' ? '' : instructorName,
+            slotTime,
             appointmentDate: appointment,
             notes,
           });
 
-          return booking.populate('service');
+          const populated = await booking.populate('service');
+          return {
+            ...populated.toObject(),
+            service: withServiceDefaults(populated.service),
+          };
         })()
       : (() => {
           const booking = {
@@ -587,12 +1085,18 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
             email: req.user.email,
             membershipNumber: req.user.membershipNumber,
             service,
+            locationId: location.id,
+            locationName: location.name,
+            locationAddress: location.address,
+            instructorName: service.bookingMode === 'self-led' ? '' : instructorName,
+            slotTime,
             appointmentDate: appointment.toISOString(),
             status: 'Pending',
             notes,
             createdAt: new Date().toISOString(),
           };
           memoryBookings.push(booking);
+          persistDemoState();
           return booking;
         })();
 
@@ -611,13 +1115,21 @@ app.patch('/api/admin/requests/:id', requireAuth, requireAdmin, async (req, res)
     }
 
     const updatedBooking = databaseReady
-      ? await Booking.findByIdAndUpdate(req.params.id, { status }, { new: true }).populate('service')
+      ? (() => Booking.findByIdAndUpdate(req.params.id, { status }, { new: true }).populate('service').then((booking) => (
+          booking
+            ? {
+                ...booking.toObject(),
+                service: withServiceDefaults(booking.service),
+              }
+            : null
+        )))()
       : (() => {
           const booking = memoryBookings.find((item) => item._id === req.params.id);
           if (!booking) {
             return null;
           }
           booking.status = status;
+          persistDemoState();
           return booking;
         })();
 
@@ -651,7 +1163,10 @@ app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
 
       existingBooking.status = 'Cancelled';
       await existingBooking.save();
-      booking = existingBooking;
+      booking = {
+        ...existingBooking.toObject(),
+        service: withServiceDefaults(existingBooking.service),
+      };
     } else {
       booking = memoryBookings.find((item) => item._id === req.params.id);
       if (!booking) {
@@ -667,6 +1182,7 @@ app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
       }
 
       booking.status = 'Cancelled';
+      persistDemoState();
     }
 
     return res.json(booking);
@@ -713,7 +1229,10 @@ app.post('/api/reviews', requireAuth, async (req, res) => {
 
     if (databaseReady) {
       const populatedReview = await Review.findById(review._id).populate('service');
-      return res.status(201).json(populatedReview);
+      return res.status(201).json({
+        ...populatedReview.toObject(),
+        service: withServiceDefaults(populatedReview.service),
+      });
     }
 
     const service = memoryServices.find((item) => item._id === booking.service._id) || booking.service;
@@ -728,8 +1247,8 @@ app.post('/api/reviews', requireAuth, async (req, res) => {
 
 connectDatabase()
   .finally(() => {
-    app.listen(PORT, () => {
+    server.listen(PORT, '127.0.0.1', () => {
       const mode = databaseReady ? 'database' : 'demo';
-      console.log(`Wellness backend running at http://localhost:${PORT} (${mode} mode)`);
+      console.log(`Wellness backend running at http://127.0.0.1:${PORT} (${mode} mode)`);
     });
   });
