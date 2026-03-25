@@ -3,17 +3,25 @@ const http = require('http');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
-const { randomUUID, scryptSync, timingSafeEqual } = require('crypto');
+const { randomUUID, scryptSync, timingSafeEqual, createHash } = require('crypto');
 require('dotenv').config();
 const Service = require('./models/Service');
 const Booking = require('./models/Booking');
 const User = require('./models/User');
 const Review = require('./models/Review');
+const Session = require('./models/Session');
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const HOST = process.env.HOST || (IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1');
+const ALLOW_DEMO_MODE = process.env.ALLOW_DEMO_MODE === 'true' || !IS_PRODUCTION;
+const SEED_DEMO_USERS = process.env.SEED_DEMO_USERS === 'true' || !IS_PRODUCTION;
+const SESSION_COOKIE_NAME = 'wellness_session';
+const SESSION_DURATION_DAYS = Math.max(1, Number(process.env.SESSION_DURATION_DAYS || 7));
+const SESSION_DURATION_MS = SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000;
 const DEMO_DATA_PATH = path.join(__dirname, 'data', 'demo-data.json');
 const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',')
@@ -74,6 +82,52 @@ function createServiceConfig({ bookingMode, startHour, endHour, intervalMinutes,
   };
 }
 
+function getDefaultServicePrice(service) {
+  const normalizedName = String(service?.name || '').toLowerCase();
+  const normalizedCategory = String(service?.category || '').toLowerCase();
+
+  if (normalizedName.includes('pilates')) {
+    return 32;
+  }
+
+  if (normalizedCategory.includes('massage')) {
+    return 140;
+  }
+
+  if (normalizedCategory.includes('spa')) {
+    return 95;
+  }
+
+  if (normalizedName.includes('gym') || normalizedCategory.includes('fitness')) {
+    return 22;
+  }
+
+  return 45;
+}
+
+function getDefaultServiceCapacity(service) {
+  const normalizedName = String(service?.name || '').toLowerCase();
+  const normalizedCategory = String(service?.category || '').toLowerCase();
+
+  if (normalizedName.includes('pilates')) {
+    return 8;
+  }
+
+  if (normalizedCategory.includes('massage')) {
+    return 3;
+  }
+
+  if (normalizedCategory.includes('spa')) {
+    return 4;
+  }
+
+  if (normalizedName.includes('gym') || normalizedCategory.includes('fitness')) {
+    return 60;
+  }
+
+  return 1;
+}
+
 const defaultServices = [
   {
     name: 'Pilates Flow',
@@ -81,6 +135,7 @@ const defaultServices = [
     durationMinutes: 60,
     category: 'Class',
     capacity: 8,
+    price: 32,
     ...createServiceConfig({
       bookingMode: 'instructor-led',
       startHour: 6,
@@ -103,6 +158,7 @@ const defaultServices = [
     durationMinutes: 60,
     category: 'Massage',
     capacity: 3,
+    price: 140,
     ...createServiceConfig({
       bookingMode: 'instructor-led',
       startHour: 9,
@@ -125,6 +181,7 @@ const defaultServices = [
     durationMinutes: 45,
     category: 'Spa',
     capacity: 4,
+    price: 95,
     ...createServiceConfig({
       bookingMode: 'instructor-led',
       startHour: 10,
@@ -146,7 +203,8 @@ const defaultServices = [
     description: 'Independent gym time for members who want a flexible workout window.',
     durationMinutes: 90,
     category: 'Fitness',
-    capacity: 12,
+    capacity: 60,
+    price: 22,
     ...createServiceConfig({
       bookingMode: 'self-led',
       startHour: 6,
@@ -183,6 +241,8 @@ let memoryServices = defaultServices.map((service) => ({
 let memoryBookings = [];
 let memoryUsers = [];
 let memoryReviews = [];
+
+app.disable('x-powered-by');
 
 function getDefaultServiceConfig(service) {
   if (String(service?.name).toLowerCase().includes('gym')) {
@@ -234,6 +294,11 @@ function withServiceDefaults(service) {
 
   return {
     ...plainService,
+    price: plainService.price ?? getDefaultServicePrice(plainService),
+    capacity:
+      isSelfLedService(plainService) && Number(plainService.capacity || 0) <= 12
+        ? 60
+        : plainService.capacity ?? getDefaultServiceCapacity(plainService),
     bookingMode: plainService.bookingMode || fallback.bookingMode,
     schedule: {
       ...fallback.schedule,
@@ -259,6 +324,18 @@ function formatTimeLabel(timeValue) {
 
 function buildAppointmentDate(date, time) {
   return new Date(`${date}T${time}:00`);
+}
+
+function roundCurrency(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function isSelfLedService(service) {
+  return service?.bookingMode === 'self-led' || String(service?.name || '').toLowerCase().includes('open gym');
+}
+
+function isUpcomingAppointment(appointmentDate) {
+  return appointmentDate.getTime() > Date.now();
 }
 
 function loadDemoState() {
@@ -339,6 +416,9 @@ function generateServiceSlots(serviceInput, date, locationId) {
       instructorName: defaultInstructor,
       instructorOptions: instructors,
     };
+  }).filter((slot) => {
+    const appointment = buildAppointmentDate(date, slot.time);
+    return !Number.isNaN(appointment.getTime()) && isUpcomingAppointment(appointment);
   });
 }
 
@@ -429,6 +509,27 @@ async function findReviewByBookingId(bookingId) {
     : memoryReviews.find((review) => review.booking === bookingId) || null;
 }
 
+async function updateBookingById(id, updates) {
+  return databaseReady
+    ? (() => Booking.findByIdAndUpdate(id, updates, { new: true }).populate('service').then((booking) => (
+        booking
+          ? {
+              ...booking.toObject(),
+              service: withServiceDefaults(booking.service),
+            }
+          : null
+      )))()
+    : (() => {
+        const booking = memoryBookings.find((item) => item._id === id);
+        if (!booking) {
+          return null;
+        }
+        Object.assign(booking, updates, { updatedAt: new Date().toISOString() });
+        persistDemoState();
+        return booking;
+      })();
+}
+
 function hashPassword(password) {
   const salt = randomUUID();
   const derivedKey = scryptSync(password, salt, 64).toString('hex');
@@ -462,9 +563,96 @@ function sanitizeUser(user) {
   };
 }
 
-function createSession(user) {
+function hashSessionToken(token) {
+  return createHash('sha256').update(String(token)).digest('hex');
+}
+
+function parseCookies(cookieHeader = '') {
+  return String(cookieHeader)
+    .split(';')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .reduce((cookieMap, cookiePair) => {
+      const separatorIndex = cookiePair.indexOf('=');
+      if (separatorIndex === -1) {
+        return cookieMap;
+      }
+
+      const key = cookiePair.slice(0, separatorIndex).trim();
+      const value = cookiePair.slice(separatorIndex + 1).trim();
+      cookieMap[key] = decodeURIComponent(value);
+      return cookieMap;
+    }, {});
+}
+
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+
+  if (options.maxAge !== undefined) {
+    parts.push(`Max-Age=${Math.max(0, Math.floor(options.maxAge))}`);
+  }
+
+  if (options.expires) {
+    parts.push(`Expires=${options.expires.toUTCString()}`);
+  }
+
+  parts.push(`Path=${options.path || '/'}`);
+
+  if (options.httpOnly) {
+    parts.push('HttpOnly');
+  }
+
+  if (options.sameSite) {
+    parts.push(`SameSite=${options.sameSite}`);
+  }
+
+  if (options.secure) {
+    parts.push('Secure');
+  }
+
+  return parts.join('; ');
+}
+
+function setSessionCookie(res, token) {
+  res.append('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: IS_PRODUCTION,
+    sameSite: IS_PRODUCTION ? 'None' : 'Lax',
+    maxAge: SESSION_DURATION_MS / 1000,
+    path: '/',
+  }));
+}
+
+function clearSessionCookie(res) {
+  res.append('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, '', {
+    httpOnly: true,
+    secure: IS_PRODUCTION,
+    sameSite: IS_PRODUCTION ? 'None' : 'Lax',
+    maxAge: 0,
+    expires: new Date(0),
+    path: '/',
+  }));
+}
+
+async function createSession(user) {
   const token = randomUUID();
-  sessions.set(token, sanitizeUser(user));
+  const sessionUser = sanitizeUser(user);
+  const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+
+  if (databaseReady) {
+    await Session.create({
+      user: sessionUser._id,
+      tokenHash: hashSessionToken(token),
+      expiresAt,
+      lastSeenAt: new Date(),
+    });
+  } else {
+    sessions.set(token, {
+      user: sessionUser,
+      expiresAt: expiresAt.toISOString(),
+    });
+  }
+
   return token;
 }
 
@@ -473,6 +661,46 @@ async function findUserByEmail(email) {
   return databaseReady
     ? User.findOne({ email: normalizedEmail })
     : memoryUsers.find((user) => user.email === normalizedEmail) || null;
+}
+
+function normalizeMembershipNumber(value) {
+  return String(value || '')
+    .trim()
+    .toUpperCase();
+}
+
+async function findUserByMembershipNumber(membershipNumber) {
+  const normalizedMembershipNumber = normalizeMembershipNumber(membershipNumber);
+  if (!normalizedMembershipNumber) {
+    return null;
+  }
+
+  return databaseReady
+    ? User.findOne({ membershipNumber: normalizedMembershipNumber })
+    : memoryUsers.find((user) => normalizeMembershipNumber(user.membershipNumber) === normalizedMembershipNumber) || null;
+}
+
+async function findUserByIdentifier(identifier) {
+  const normalizedIdentifier = String(identifier || '').trim();
+  if (!normalizedIdentifier) {
+    return null;
+  }
+
+  if (normalizedIdentifier.includes('@')) {
+    return findUserByEmail(normalizedIdentifier);
+  }
+
+  return findUserByMembershipNumber(normalizedIdentifier);
+}
+
+async function generateMembershipNumber() {
+  let candidate = '';
+
+  do {
+    candidate = `MEM-${Math.floor(100000 + Math.random() * 900000)}`;
+  } while (await findUserByMembershipNumber(candidate));
+
+  return candidate;
 }
 
 async function findUserById(id) {
@@ -486,6 +714,8 @@ async function createUser(userData) {
     const user = {
       _id: randomUUID(),
       ...userData,
+      email: String(userData.email).toLowerCase(),
+      membershipNumber: normalizeMembershipNumber(userData.membershipNumber),
       membershipActive: userData.membershipActive ?? true,
     };
     memoryUsers.push(user);
@@ -508,23 +738,69 @@ async function updateUserById(id, updates) {
       })();
 }
 
-function getSessionUser(req) {
-  const token = req.headers.authorization?.replace('Bearer ', '') || req.headers['x-auth-token'];
+function getSessionToken(req) {
+  const cookies = parseCookies(req.headers.cookie || '');
+  return cookies[SESSION_COOKIE_NAME] || req.headers.authorization?.replace('Bearer ', '') || req.headers['x-auth-token'] || '';
+}
+
+async function getSessionUser(req) {
+  const token = getSessionToken(req);
   if (!token) {
     return null;
   }
-  return sessions.get(token) || null;
+
+  if (databaseReady) {
+    const session = await Session.findOne({
+      tokenHash: hashSessionToken(token),
+      expiresAt: { $gt: new Date() },
+    }).populate('user');
+
+    if (!session || !session.user) {
+      return null;
+    }
+
+    session.lastSeenAt = new Date();
+    await session.save();
+    return sanitizeUser(session.user);
+  }
+
+  const sessionRecord = sessions.get(token);
+  if (!sessionRecord) {
+    return null;
+  }
+
+  if (new Date(sessionRecord.expiresAt).getTime() <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+
+  return sessionRecord.user;
+}
+
+async function deleteSession(token) {
+  if (!token) {
+    return;
+  }
+
+  if (databaseReady) {
+    await Session.deleteOne({ tokenHash: hashSessionToken(token) });
+    return;
+  }
+
+  sessions.delete(token);
 }
 
 async function requireAuth(req, res, next) {
-  const sessionUser = getSessionUser(req);
+  const sessionUser = await getSessionUser(req);
   if (!sessionUser) {
+    clearSessionCookie(res);
     return res.status(401).json({ message: 'Please log in first.' });
   }
 
   const fullUser = await findUserById(sessionUser._id);
   if (!fullUser) {
-    sessions.delete(req.headers.authorization?.replace('Bearer ', '') || req.headers['x-auth-token']);
+    await deleteSession(getSessionToken(req));
+    clearSessionCookie(res);
     return res.status(401).json({ message: 'Your session is no longer valid. Please log in again.' });
   }
 
@@ -549,6 +825,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', allowedOrigin);
   }
 
+  res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token');
 
@@ -558,7 +835,7 @@ app.use((req, res, next) => {
 
   return next();
 });
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 async function seedServices() {
   const serviceCount = await Service.countDocuments();
@@ -570,6 +847,10 @@ async function seedServices() {
 }
 
 async function seedDemoUsers() {
+  if (!SEED_DEMO_USERS) {
+    return;
+  }
+
   const existingAdmin = await findUserByEmail(demoAdmin.email);
   if (!existingAdmin) {
     await createUser({
@@ -597,8 +878,37 @@ async function seedDemoUsers() {
   }
 }
 
+async function seedBootstrapAdmin() {
+  const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const adminPassword = String(process.env.ADMIN_PASSWORD || '').trim();
+
+  if (!IS_PRODUCTION || !adminEmail || !adminPassword) {
+    return;
+  }
+
+  const existingAdmin = await findUserByEmail(adminEmail);
+  if (existingAdmin) {
+    return;
+  }
+
+  await createUser({
+    name: String(process.env.ADMIN_NAME || 'Wellness Admin').trim(),
+    email: adminEmail,
+    passwordHash: hashPassword(adminPassword),
+    role: 'admin',
+    membershipNumber: normalizeMembershipNumber(process.env.ADMIN_MEMBERSHIP_NUMBER || 'ADMIN-001'),
+    membershipActive: true,
+  });
+
+  console.log('Seeded production admin account from environment variables');
+}
+
 async function connectDatabase() {
   if (!MONGO_URI) {
+    if (!ALLOW_DEMO_MODE) {
+      throw new Error('MONGO_URI is required when demo mode is disabled.');
+    }
+
     console.warn('MONGO_URI is missing. Starting in demo mode with in-memory data.');
     loadDemoState();
     await seedDemoUsers();
@@ -611,8 +921,13 @@ async function connectDatabase() {
     databaseReady = true;
     console.log('Connected to Wellness database');
     await seedServices();
+    await seedBootstrapAdmin();
     await seedDemoUsers();
   } catch (error) {
+    if (!ALLOW_DEMO_MODE) {
+      throw new Error(`Database connection failed and demo mode is disabled. (${error.message})`);
+    }
+
     console.warn(`Database connection failed. Starting in demo mode instead. (${error.message})`);
     loadDemoState();
     await seedDemoUsers();
@@ -626,10 +941,10 @@ app.get('/api/health', (req, res) => {
 
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { name, email, password, membershipNumber } = req.body;
+    const { name, email, password } = req.body;
 
-    if (!name || !email || !password || !membershipNumber) {
-      return res.status(400).json({ message: 'Name, email, password, and membership number are required.' });
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Name, email, and password are required.' });
     }
 
     const existingUser = await findUserByEmail(email);
@@ -637,18 +952,24 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(409).json({ message: 'An account with that email already exists.' });
     }
 
+    if (String(password).trim().length < 8) {
+      return res.status(400).json({ message: 'Your password should be at least 8 characters long.' });
+    }
+
+    const membershipNumber = await generateMembershipNumber();
+
     const newUser = await createUser({
-      name,
+      name: String(name).trim(),
       email: String(email).toLowerCase(),
-      passwordHash: hashPassword(password),
+      passwordHash: hashPassword(String(password).trim()),
       membershipNumber,
       membershipActive: true,
       role: 'user',
     });
 
-    const token = createSession(newUser);
+    const token = await createSession(newUser);
+    setSessionCookie(res, token);
     return res.status(201).json({
-      token,
       user: sanitizeUser(newUser),
     });
   } catch (error) {
@@ -658,20 +979,21 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { identifier, email, password } = req.body;
+    const loginIdentifier = String(identifier || email || '').trim();
 
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required.' });
+    if (!loginIdentifier || !password) {
+      return res.status(400).json({ message: 'Email or membership number and password are required.' });
     }
 
-    const user = await findUserByEmail(email);
+    const user = await findUserByIdentifier(loginIdentifier);
     if (!user || !verifyPassword(password, user.passwordHash)) {
-      return res.status(401).json({ message: 'Incorrect email or password.' });
+      return res.status(401).json({ message: 'Incorrect email, membership number, or password.' });
     }
 
-    const token = createSession(user);
+    const token = await createSession(user);
+    setSessionCookie(res, token);
     return res.json({
-      token,
       user: sanitizeUser(user),
     });
   } catch (error) {
@@ -683,17 +1005,24 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
   res.json({ user: req.user });
 });
 
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    await deleteSession(getSessionToken(req));
+    clearSessionCookie(res);
+    return res.json({ ok: true });
+  } catch (error) {
+    clearSessionCookie(res);
+    return res.status(500).json({ message: 'Unable to log out right now.' });
+  }
+});
+
 app.patch('/api/auth/me', requireAuth, async (req, res) => {
   try {
-    const { name, membershipNumber, membershipActive, email, currentPassword, newPassword } = req.body;
+    const { name, membershipActive, email, currentPassword, newPassword } = req.body;
     const updates = {};
 
     if (typeof name === 'string' && name.trim()) {
       updates.name = name.trim();
-    }
-
-    if (typeof membershipNumber === 'string' && membershipNumber.trim()) {
-      updates.membershipNumber = membershipNumber.trim();
     }
 
     if (req.user.role === 'admin' && typeof membershipActive === 'boolean') {
@@ -744,9 +1073,13 @@ app.patch('/api/auth/me', requireAuth, async (req, res) => {
       return res.status(404).json({ message: 'User profile not found.' });
     }
 
-    const token = req.headers.authorization?.replace('Bearer ', '') || req.headers['x-auth-token'];
-    if (token) {
-      sessions.set(token, sanitizeUser(updatedUser));
+    const token = getSessionToken(req);
+    if (token && !databaseReady && sessions.has(token)) {
+      const existingSession = sessions.get(token);
+      sessions.set(token, {
+        ...existingSession,
+        user: sanitizeUser(updatedUser),
+      });
     }
 
     return res.json({ user: sanitizeUser(updatedUser) });
@@ -808,19 +1141,35 @@ app.get('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
 
 app.post('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { name, description, durationMinutes, category, capacity } = req.body;
+    const { name, description, durationMinutes, category, capacity, price } = req.body;
 
-    if (!name || !description || !durationMinutes || !category || !capacity) {
+    if (!name || !description || !durationMinutes || !category || !capacity || price === undefined) {
       return res.status(400).json({ message: 'All service fields are required.' });
+    }
+
+    const parsedDuration = Number(durationMinutes);
+    const parsedCapacity = Number(capacity);
+    const parsedPrice = Number(price);
+
+    if (
+      !Number.isFinite(parsedDuration) ||
+      parsedDuration < 15 ||
+      !Number.isFinite(parsedCapacity) ||
+      parsedCapacity < 1 ||
+      !Number.isFinite(parsedPrice) ||
+      parsedPrice < 0
+    ) {
+      return res.status(400).json({ message: 'Duration, capacity, and price must be valid positive values.' });
     }
 
     const defaults = getDefaultServiceConfig({ name, category });
     const service = await createService({
       name: String(name).trim(),
       description: String(description).trim(),
-      durationMinutes: Number(durationMinutes),
+      durationMinutes: parsedDuration,
       category: String(category).trim(),
-      capacity: Number(capacity),
+      capacity: parsedCapacity,
+      price: parsedPrice,
       bookingMode: defaults.bookingMode,
       schedule: defaults.schedule,
       locations: defaults.locations,
@@ -836,7 +1185,7 @@ app.post('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
 
 app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { name, description, durationMinutes, category, capacity, active, bookingMode, schedule, locations } = req.body;
+    const { name, description, durationMinutes, category, capacity, price, active, bookingMode, schedule, locations } = req.body;
     const updates = {};
 
     if (typeof name === 'string' && name.trim()) {
@@ -852,11 +1201,27 @@ app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res)
     }
 
     if (durationMinutes !== undefined) {
-      updates.durationMinutes = Number(durationMinutes);
+      const parsedDuration = Number(durationMinutes);
+      if (!Number.isFinite(parsedDuration) || parsedDuration < 15) {
+        return res.status(400).json({ message: 'Duration must be at least 15 minutes.' });
+      }
+      updates.durationMinutes = parsedDuration;
     }
 
     if (capacity !== undefined) {
-      updates.capacity = Number(capacity);
+      const parsedCapacity = Number(capacity);
+      if (!Number.isFinite(parsedCapacity) || parsedCapacity < 1) {
+        return res.status(400).json({ message: 'Capacity must be at least 1.' });
+      }
+      updates.capacity = parsedCapacity;
+    }
+
+    if (price !== undefined) {
+      const parsedPrice = Number(price);
+      if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+        return res.status(400).json({ message: 'Price must be a valid amount.' });
+      }
+      updates.price = parsedPrice;
     }
 
     if (typeof active === 'boolean') {
@@ -992,7 +1357,17 @@ app.get('/api/bookings', requireAuth, async (req, res) => {
 
 app.post('/api/bookings', requireAuth, async (req, res) => {
   try {
-    const { serviceId, bookingDate, slotTime, locationId, instructorName = '', notes = '' } = req.body;
+    const {
+      serviceId,
+      bookingDate,
+      slotTime,
+      locationId,
+      instructorName = '',
+      notes = '',
+      paymentCardholderName = '',
+      paymentCardNumber = '',
+      creditBookingId = '',
+    } = req.body;
 
     if (!req.user.membershipActive) {
       return res.status(403).json({ message: 'Your membership is inactive. Please contact the wellness center.' });
@@ -1003,7 +1378,7 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
     }
 
     const service = await findServiceById(serviceId);
-    if (!service) {
+    if (!service || !service.active) {
       return res.status(404).json({ message: 'Selected service was not found.' });
     }
 
@@ -1030,8 +1405,11 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       return res.status(400).json({ message: 'Appointment date is invalid.' });
     }
 
+    if (!isUpcomingAppointment(appointment)) {
+      return res.status(400).json({ message: 'Please choose an upcoming class time.' });
+    }
+
     const startWindow = new Date(appointment);
-    const endWindow = new Date(appointment.getTime() + service.durationMinutes * 60000);
 
     const overlappingApprovedOrPending = databaseReady
       ? await Booking.countDocuments({
@@ -1056,6 +1434,53 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       });
     }
 
+    const normalizedCreditBookingId = String(creditBookingId || '').trim();
+    const normalizedCardholder = String(paymentCardholderName).trim();
+    const digitsOnlyCardNumber = String(paymentCardNumber).replace(/\D/g, '');
+    let paymentStatus = 'Paid';
+    let paymentAmount = Number(service.price || 0);
+    let paymentLast4 = '';
+    let creditSourceBooking = null;
+
+    if (normalizedCreditBookingId) {
+      creditSourceBooking = await findBookingById(normalizedCreditBookingId);
+
+      if (!creditSourceBooking) {
+        return res.status(404).json({ message: 'The open gym credit could not be found.' });
+      }
+
+      if (req.user.role !== 'admin' && creditSourceBooking.email !== req.user.email) {
+        return res.status(403).json({ message: 'You can only use your own open gym credit.' });
+      }
+
+      if (!isSelfLedService(service) || !isSelfLedService(creditSourceBooking.service)) {
+        return res.status(400).json({ message: 'Credits can only be applied to open gym sessions.' });
+      }
+
+      if (String(creditSourceBooking.service?._id || creditSourceBooking.service) !== String(service._id)) {
+        return res.status(400).json({ message: 'This credit can only be used for another open gym session.' });
+      }
+
+      if (creditSourceBooking.attendanceStatus !== 'No-show' || !creditSourceBooking.creditEligible) {
+        return res.status(400).json({ message: 'That booking does not have an available reschedule credit.' });
+      }
+
+      if (creditSourceBooking.creditRedeemedForBookingId) {
+        return res.status(400).json({ message: 'That credit has already been used.' });
+      }
+
+      paymentStatus = 'Credit Applied';
+      paymentLast4 = creditSourceBooking.paymentLast4 || '';
+    } else {
+      if (!normalizedCardholder || digitsOnlyCardNumber.length < 12) {
+        return res.status(400).json({
+          message: 'Please enter a cardholder name and a valid card number to complete checkout.',
+        });
+      }
+
+      paymentLast4 = digitsOnlyCardNumber.slice(-4);
+    }
+
     const populatedBooking = databaseReady
       ? await (async () => {
           const booking = await Booking.create({
@@ -1069,8 +1494,27 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
             instructorName: service.bookingMode === 'self-led' ? '' : instructorName,
             slotTime,
             appointmentDate: appointment,
+            status: 'Approved',
+            attendanceStatus: 'Scheduled',
             notes,
+            paymentStatus,
+            paymentAmount,
+            paymentCardholderName: '',
+            paymentLast4,
+            paidAt: new Date(),
+            noShowFeeAmount: 0,
+            creditEligible: false,
+            creditSourceBookingId: normalizedCreditBookingId,
+            creditRedeemedForBookingId: '',
+            attendanceMarkedAt: null,
           });
+
+          if (creditSourceBooking) {
+            await Booking.findByIdAndUpdate(creditSourceBooking._id, {
+              creditEligible: false,
+              creditRedeemedForBookingId: String(booking._id),
+            });
+          }
 
           const populated = await booking.populate('service');
           return {
@@ -1091,10 +1535,28 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
             instructorName: service.bookingMode === 'self-led' ? '' : instructorName,
             slotTime,
             appointmentDate: appointment.toISOString(),
-            status: 'Pending',
+            status: 'Approved',
+            attendanceStatus: 'Scheduled',
             notes,
+            paymentStatus,
+            paymentAmount,
+            paymentCardholderName: '',
+            paymentLast4,
+            paidAt: new Date().toISOString(),
+            noShowFeeAmount: 0,
+            creditEligible: false,
+            creditSourceBookingId: normalizedCreditBookingId,
+            creditRedeemedForBookingId: '',
+            attendanceMarkedAt: null,
             createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
           };
+
+          if (creditSourceBooking) {
+            creditSourceBooking.creditEligible = false;
+            creditSourceBooking.creditRedeemedForBookingId = booking._id;
+            creditSourceBooking.updatedAt = new Date().toISOString();
+          }
           memoryBookings.push(booking);
           persistDemoState();
           return booking;
@@ -1143,6 +1605,52 @@ app.patch('/api/admin/requests/:id', requireAuth, requireAdmin, async (req, res)
   }
 });
 
+app.patch('/api/admin/bookings/:id/attendance', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { attendanceStatus } = req.body;
+
+    if (!['Attended', 'No-show'].includes(attendanceStatus)) {
+      return res.status(400).json({ message: 'Attendance status must be Attended or No-show.' });
+    }
+
+    const booking = await findBookingById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ message: 'Booking not found.' });
+    }
+
+    if (booking.status === 'Cancelled') {
+      return res.status(400).json({ message: 'Cancelled bookings cannot be marked for attendance.' });
+    }
+
+    const appointmentDate = new Date(booking.appointmentDate);
+    if (Number.isNaN(appointmentDate.getTime()) || isUpcomingAppointment(appointmentDate)) {
+      return res.status(400).json({ message: 'Attendance can only be marked after the class start time.' });
+    }
+
+    const isOpenGym = isSelfLedService(booking.service);
+    const updates = {
+      attendanceStatus,
+      attendanceMarkedAt: new Date(),
+      noShowFeeAmount: 0,
+      creditEligible: false,
+    };
+
+    if (attendanceStatus === 'No-show') {
+      if (isOpenGym) {
+        updates.creditEligible = true;
+        updates.noShowFeeAmount = 0;
+      } else {
+        updates.noShowFeeAmount = roundCurrency(Number(booking.paymentAmount || booking.service?.price || 0) * 0.2);
+      }
+    }
+
+    const updatedBooking = await updateBookingById(req.params.id, updates);
+    return res.json(updatedBooking);
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to update attendance right now.' });
+  }
+});
+
 app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
   try {
     let booking;
@@ -1155,6 +1663,10 @@ app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
 
       if (req.user.role !== 'admin' && existingBooking.email !== req.user.email) {
         return res.status(403).json({ message: 'You can only cancel your own bookings.' });
+      }
+
+      if (req.user.role !== 'admin' && !isUpcomingAppointment(new Date(existingBooking.appointmentDate))) {
+        return res.status(400).json({ message: 'This class has already started, so it can no longer be cancelled.' });
       }
 
       if (existingBooking.status === 'Cancelled') {
@@ -1175,6 +1687,10 @@ app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
 
       if (req.user.role !== 'admin' && booking.email !== req.user.email) {
         return res.status(403).json({ message: 'You can only cancel your own bookings.' });
+      }
+
+      if (req.user.role !== 'admin' && !isUpcomingAppointment(new Date(booking.appointmentDate))) {
+        return res.status(400).json({ message: 'This class has already started, so it can no longer be cancelled.' });
       }
 
       if (booking.status === 'Cancelled') {
@@ -1246,9 +1762,13 @@ app.post('/api/reviews', requireAuth, async (req, res) => {
 });
 
 connectDatabase()
-  .finally(() => {
-    server.listen(PORT, '127.0.0.1', () => {
+  .then(() => {
+    server.listen(PORT, HOST, () => {
       const mode = databaseReady ? 'database' : 'demo';
-      console.log(`Wellness backend running at http://127.0.0.1:${PORT} (${mode} mode)`);
+      console.log(`Wellness backend running at http://${HOST}:${PORT} (${mode} mode)`);
     });
+  })
+  .catch((error) => {
+    console.error(`Unable to start the wellness backend. ${error.message}`);
+    process.exit(1);
   });

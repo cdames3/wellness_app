@@ -6,17 +6,15 @@ import pilatesImage from './assets/pilates.jpg';
 import spaImage from './assets/sauna-spa.jpg';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
-const sessionStorageKey = 'wellness-session';
 
 const emptyRegisterForm = {
   name: '',
   email: '',
   password: '',
-  membershipNumber: '',
 };
 
 const emptyLoginForm = {
-  email: '',
+  identifier: '',
   password: '',
 };
 
@@ -27,6 +25,8 @@ const emptyBookingForm = {
   locationId: '',
   instructorName: '',
   notes: '',
+  paymentCardholderName: '',
+  paymentCardNumber: '',
 };
 
 const emptyProfileForm = {
@@ -45,6 +45,7 @@ const emptyServiceForm = {
   durationMinutes: 60,
   category: '',
   capacity: 1,
+  price: 0,
   active: true,
 };
 
@@ -85,22 +86,67 @@ const servicePresentation = {
   },
 };
 
-function getStoredSession() {
-  const rawValue = window.localStorage.getItem(sessionStorageKey);
-  if (!rawValue) {
-    return { token: '', user: null };
-  }
-
-  try {
-    return JSON.parse(rawValue);
-  } catch {
-    return { token: '', user: null };
-  }
-}
-
 function formatBookingDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatPrice(value) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(amount);
+}
+
+function formatBookingStatusLabel(status) {
+  if (status === 'Approved') {
+    return 'Booked';
+  }
+
+  return status;
+}
+
+function formatAttendanceStatusLabel(status) {
+  if (status === 'No-show') {
+    return 'No-show';
+  }
+
+  if (status === 'Attended') {
+    return 'Attended';
+  }
+
+  return 'Scheduled';
+}
+
+function formatPaymentStatusLabel(status) {
+  if (status === 'Credit Applied') {
+    return 'Credit applied';
+  }
+
+  return status || 'Paid';
+}
+
+function createSessionKey(booking) {
+  const serviceId = booking.service?._id || booking.service;
+  return [
+    serviceId,
+    booking.locationId,
+    new Date(booking.appointmentDate).toISOString(),
+  ].join('::');
+}
+
+function buildAppointmentDate(date, time) {
+  return new Date(`${date}T${time}:00`);
+}
+
+function isUpcomingAppointment(value) {
+  const appointment = value instanceof Date ? value : new Date(value);
+  return !Number.isNaN(appointment.getTime()) && appointment.getTime() > Date.now();
+}
+
+function isSelfLedService(service) {
+  return service?.bookingMode === 'self-led' || String(service?.name || '').toLowerCase().includes('open gym');
 }
 
 function getServicePresentation(service) {
@@ -111,6 +157,88 @@ function getServicePresentation(service) {
       visualClass: 'visual-default',
     }
   );
+}
+
+function getServiceKey(value) {
+  return String(value?._id || value || '');
+}
+
+function buildServiceRatingMap(reviewList) {
+  return reviewList.reduce((ratingsMap, review) => {
+    const serviceKey = getServiceKey(review.service?._id || review.service);
+    if (!serviceKey) {
+      return ratingsMap;
+    }
+
+    if (!ratingsMap[serviceKey]) {
+      ratingsMap[serviceKey] = [];
+    }
+
+    ratingsMap[serviceKey].push(Number(review.rating || 0));
+    return ratingsMap;
+  }, {});
+}
+
+function getMedianRatingSummary(ratings) {
+  if (!ratings || ratings.length === 0) {
+    return {
+      count: 0,
+      roundedMedian: 0,
+      stars: '☆☆☆☆☆',
+      label: 'No ratings yet',
+    };
+  }
+
+  const sortedRatings = ratings.slice().sort((left, right) => left - right);
+  const middleIndex = Math.floor(sortedRatings.length / 2);
+  const rawMedian =
+    sortedRatings.length % 2 === 0
+      ? (sortedRatings[middleIndex - 1] + sortedRatings[middleIndex]) / 2
+      : sortedRatings[middleIndex];
+  const roundedMedian = Math.min(5, Math.max(1, Math.ceil(rawMedian)));
+
+  return {
+    count: ratings.length,
+    roundedMedian,
+    stars: `${'★'.repeat(roundedMedian)}${'☆'.repeat(5 - roundedMedian)}`,
+    label: `${roundedMedian}/5 median from ${ratings.length} review${ratings.length === 1 ? '' : 's'}`,
+  };
+}
+
+function formatMonthLabel(date) {
+  return date.toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function createCalendarCells(monthDate, sessions) {
+  const startOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  const endOfMonth = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
+  const gridStart = new Date(startOfMonth);
+  gridStart.setDate(startOfMonth.getDate() - startOfMonth.getDay());
+  const gridEnd = new Date(endOfMonth);
+  gridEnd.setDate(endOfMonth.getDate() + (6 - endOfMonth.getDay()));
+  const todayKey = new Date().toDateString();
+
+  const cells = [];
+  for (let cursor = new Date(gridStart); cursor <= gridEnd; cursor.setDate(cursor.getDate() + 1)) {
+    const cellDate = new Date(cursor);
+    const sessionsForDay = sessions.filter((session) => {
+      const sessionDate = new Date(session.appointmentDate);
+      return sessionDate.toDateString() === cellDate.toDateString();
+    });
+
+    cells.push({
+      key: cellDate.toISOString(),
+      label: cellDate.getDate(),
+      isCurrentMonth: cellDate.getMonth() === monthDate.getMonth(),
+      isToday: cellDate.toDateString() === todayKey,
+      sessions: sessionsForDay,
+    });
+  }
+
+  return cells;
 }
 
 function padTime(value) {
@@ -159,15 +287,15 @@ function generateServiceSlots(service, bookingDate, locationId) {
           : matchingOverride?.instructorName || instructors[index % Math.max(instructors.length, 1)] || '',
       instructorOptions: instructors,
     };
-  });
+  }).filter((slot) => isUpcomingAppointment(buildAppointmentDate(bookingDate, slot.time)));
 }
 
-async function apiRequest(path, options = {}, token = '') {
+async function apiRequest(path, options = {}) {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -175,18 +303,20 @@ async function apiRequest(path, options = {}, token = '') {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.message || 'Something went wrong.');
+    const requestError = new Error(data.message || 'Something went wrong.');
+    requestError.status = response.status;
+    throw requestError;
   }
 
   return data;
 }
 
 export default function App() {
-  const initialSession = getStoredSession();
-  const [view, setView] = useState(initialSession.user ? 'app' : 'login');
-  const [token, setToken] = useState(initialSession.token || '');
-  const [user, setUser] = useState(initialSession.user || null);
+  const [view, setView] = useState('login');
+  const [user, setUser] = useState(null);
+  const [authChecking, setAuthChecking] = useState(true);
   const [memberPage, setMemberPage] = useState('book');
+  const [adminPage, setAdminPage] = useState('services');
   const [services, setServices] = useState([]);
   const [adminServices, setAdminServices] = useState([]);
   const [reviews, setReviews] = useState([]);
@@ -208,6 +338,14 @@ export default function App() {
   const [overrideLoading, setOverrideLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [recentBooking, setRecentBooking] = useState(null);
+  const [creditBookingId, setCreditBookingId] = useState('');
+  const [editingServiceId, setEditingServiceId] = useState('');
+  const [editingServiceForm, setEditingServiceForm] = useState(emptyServiceForm);
+  const [calendarMonthDate, setCalendarMonthDate] = useState(() => {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  });
 
   useEffect(() => {
     async function loadPublicData() {
@@ -229,43 +367,45 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!token) {
-      setBookings([]);
-      return;
-    }
+    let ignore = false;
 
-    window.localStorage.setItem(sessionStorageKey, JSON.stringify({ token, user }));
-  }, [token, user]);
-
-  useEffect(() => {
     async function restoreSession() {
-      if (!token) {
-        return;
-      }
-
       try {
-        const data = await apiRequest('/auth/me', {}, token);
+        const data = await apiRequest('/auth/me');
+        if (ignore) {
+          return;
+        }
         setUser(data.user);
         setView('app');
       } catch {
-        handleLogout();
+        if (!ignore) {
+          clearSessionState();
+        }
+      } finally {
+        if (!ignore) {
+          setAuthChecking(false);
+        }
       }
     }
 
     restoreSession();
+
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (token) {
+    if (user) {
       loadBookings();
     }
-  }, [token]);
+  }, [user?._id]);
 
   useEffect(() => {
-    if (token && user?.role === 'admin') {
+    if (user?.role === 'admin') {
       loadAdminServices();
     }
-  }, [token, user]);
+  }, [user?._id, user?.role]);
 
   useEffect(() => {
     if (user) {
@@ -314,6 +454,25 @@ export default function App() {
     }
   }, [user?._id, user?.role]);
 
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      setAdminPage('services');
+    }
+  }, [user?._id, user?.role]);
+
+  useEffect(() => {
+    if (!message && !error) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setMessage('');
+      setError('');
+    }, 2600);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [message, error]);
+
   async function refreshPublicData() {
     const [serviceData, reviewData] = await Promise.all([
       apiRequest('/services'),
@@ -324,42 +483,71 @@ export default function App() {
   }
 
   async function loadBookings() {
-    if (!token) {
+    if (!user) {
       return;
     }
 
     setLoadingBookings(true);
     try {
-      const data = await apiRequest('/bookings', {}, token);
+      const data = await apiRequest('/bookings');
       setBookings(data);
     } catch (loadError) {
-      setError(loadError.message);
+      if (!handleSessionError(loadError)) {
+        setError(loadError.message);
+      }
     } finally {
       setLoadingBookings(false);
     }
   }
 
   async function loadAdminServices() {
-    if (!token || user?.role !== 'admin') {
+    if (user?.role !== 'admin') {
       return;
     }
 
     try {
-      const data = await apiRequest('/admin/services', {}, token);
+      const data = await apiRequest('/admin/services');
       setAdminServices(data);
     } catch (loadError) {
-      setError(loadError.message);
+      if (!handleSessionError(loadError)) {
+        setError(loadError.message);
+      }
     }
   }
 
-  function handleLogout() {
-    setToken('');
+  function clearSessionState() {
     setUser(null);
+    setAuthChecking(false);
+    setView('login');
     setMemberPage('book');
+    setAdminPage('services');
     setBookings([]);
+    setRecentBooking(null);
+    setCreditBookingId('');
+    setEditingServiceId('');
+    setEditingServiceForm(emptyServiceForm);
+  }
+
+  function handleSessionError(requestError) {
+    if (requestError?.status !== 401) {
+      return false;
+    }
+
+    clearSessionState();
+    setError('Your session expired. Please log in again.');
+    return true;
+  }
+
+  async function handleLogout() {
+    try {
+      await apiRequest('/auth/logout', { method: 'POST' });
+    } catch {
+      // Ignore logout transport errors and still clear the local app state.
+    }
+
+    clearSessionState();
     setMessage('');
     setError('');
-    window.localStorage.removeItem(sessionStorageKey);
   }
 
   function updateForm(setter) {
@@ -381,11 +569,10 @@ export default function App() {
         body: JSON.stringify(registerForm),
       });
 
-      setToken(data.token);
       setUser(data.user);
       setRegisterForm(emptyRegisterForm);
       setView('app');
-      setMessage('Your account is ready. You are now signed in as a member.');
+      setMessage(`Your account is ready. Your membership number is ${data.user.membershipNumber}.`);
     } catch (registerError) {
       setError(registerError.message);
     } finally {
@@ -405,13 +592,12 @@ export default function App() {
         body: JSON.stringify(loginForm),
       });
 
-      setToken(data.token);
       setUser(data.user);
       setLoginForm(emptyLoginForm);
       setView('app');
       setMessage(
         data.user.role === 'admin'
-          ? 'Admin signed in. You can now review booking requests.'
+          ? 'Admin signed in. Studio operations are ready.'
           : 'Welcome back. Your booking dashboard is ready.'
       );
     } catch (loginError) {
@@ -428,7 +614,7 @@ export default function App() {
     setError('');
 
     try {
-      await apiRequest(
+      const createdBooking = await apiRequest(
         '/bookings',
         {
           method: 'POST',
@@ -439,9 +625,11 @@ export default function App() {
             locationId: bookingForm.locationId,
             instructorName: bookingForm.instructorName,
             notes: bookingForm.notes,
+            paymentCardholderName: bookingForm.paymentCardholderName,
+            paymentCardNumber: bookingForm.paymentCardNumber,
+            creditBookingId,
           }),
-        },
-        token
+        }
       );
 
       setBookingForm((current) => {
@@ -452,10 +640,18 @@ export default function App() {
           locationId: selectedService?.locations?.[0]?.id || current.locationId,
         };
       });
+      setRecentBooking(createdBooking);
+      setCreditBookingId('');
       await loadBookings();
-      setMessage('Booking request submitted. It will stay Pending until an admin reviews it.');
+      setMessage(
+        createdBooking.paymentStatus === 'Credit Applied'
+          ? 'Your class is booked and your Open Gym credit was applied.'
+          : 'Your class is booked and your payment was received.'
+      );
     } catch (bookingError) {
-      setError(bookingError.message);
+      if (!handleSessionError(bookingError)) {
+        setError(bookingError.message);
+      }
     } finally {
       setBookingLoading(false);
     }
@@ -479,48 +675,29 @@ export default function App() {
           body: JSON.stringify({
             name: profileForm.name,
             email: profileForm.email,
-            membershipNumber: profileForm.membershipNumber,
             currentPassword: profileForm.currentPassword,
             newPassword: profileForm.newPassword,
           }),
-        },
-        token
+        }
       );
 
       setUser(data.user);
       setProfileForm((current) => ({
         ...current,
+        name: data.user.name,
         email: data.user.email,
+        membershipNumber: data.user.membershipNumber,
         currentPassword: '',
         newPassword: '',
         confirmPassword: '',
       }));
       setMessage('Profile updated successfully.');
     } catch (profileError) {
-      setError(profileError.message);
+      if (!handleSessionError(profileError)) {
+        setError(profileError.message);
+      }
     } finally {
       setProfileLoading(false);
-    }
-  }
-
-  async function handleStatusChange(bookingId, status) {
-    setMessage('');
-    setError('');
-
-    try {
-      await apiRequest(
-        `/admin/requests/${bookingId}`,
-        {
-          method: 'PATCH',
-          body: JSON.stringify({ status }),
-        },
-        token
-      );
-
-      await loadBookings();
-      setMessage(`Booking marked as ${status}.`);
-    } catch (statusError) {
-      setError(statusError.message);
     }
   }
 
@@ -533,14 +710,15 @@ export default function App() {
         `/bookings/${bookingId}/cancel`,
         {
           method: 'PATCH',
-        },
-        token
+        }
       );
 
       await loadBookings();
       setMessage('Booking cancelled.');
     } catch (cancelError) {
-      setError(cancelError.message);
+      if (!handleSessionError(cancelError)) {
+        setError(cancelError.message);
+      }
     }
   }
 
@@ -557,36 +735,26 @@ export default function App() {
         durationMinutes: Number(serviceForm.durationMinutes),
         category: serviceForm.category,
         capacity: Number(serviceForm.capacity),
+        price: Number(serviceForm.price),
         active: serviceForm.active,
       };
 
-      if (serviceForm.id) {
-        await apiRequest(
-          `/admin/services/${serviceForm.id}`,
-          {
-            method: 'PATCH',
-            body: JSON.stringify(payload),
-          },
-          token
-        );
-        setMessage('Service updated.');
-      } else {
-        await apiRequest(
-          '/admin/services',
-          {
-            method: 'POST',
-            body: JSON.stringify(payload),
-          },
-          token
-        );
-        setMessage('Service created.');
-      }
+      await apiRequest(
+        '/admin/services',
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        }
+      );
+      setMessage('Service created.');
 
       setServiceForm(emptyServiceForm);
       await loadAdminServices();
       await refreshPublicData();
     } catch (serviceError) {
-      setError(serviceError.message);
+      if (!handleSessionError(serviceError)) {
+        setError(serviceError.message);
+      }
     } finally {
       setServiceLoading(false);
     }
@@ -608,15 +776,16 @@ export default function App() {
             rating: Number(reviewForm.rating),
             comment: reviewForm.comment,
           }),
-        },
-        token
+        }
       );
 
       setReviewForm(emptyReviewForm);
       await refreshPublicData();
       setMessage('Review submitted. Thank you for the feedback.');
     } catch (reviewError) {
-      setError(reviewError.message);
+      if (!handleSessionError(reviewError)) {
+        setError(reviewError.message);
+      }
     } finally {
       setReviewLoading(false);
     }
@@ -639,8 +808,7 @@ export default function App() {
             locationId: overrideForm.locationId,
             instructorName: overrideForm.instructorName,
           }),
-        },
-        token
+        }
       );
 
       setOverrideForm((current) => ({
@@ -652,7 +820,9 @@ export default function App() {
       await refreshPublicData();
       setMessage('Instructor schedule updated.');
     } catch (overrideError) {
-      setError(overrideError.message);
+      if (!handleSessionError(overrideError)) {
+        setError(overrideError.message);
+      }
     } finally {
       setOverrideLoading(false);
     }
@@ -667,28 +837,111 @@ export default function App() {
         `/admin/services/${serviceId}/overrides/${overrideId}`,
         {
           method: 'DELETE',
-        },
-        token
+        }
       );
 
       await loadAdminServices();
       await refreshPublicData();
       setMessage('Instructor override removed.');
     } catch (removeError) {
-      setError(removeError.message);
+      if (!handleSessionError(removeError)) {
+        setError(removeError.message);
+      }
     }
   }
 
   function startEditingService(service) {
-    setServiceForm({
+    if (editingServiceId === service._id) {
+      setEditingServiceId('');
+      setEditingServiceForm(emptyServiceForm);
+      return;
+    }
+
+    setEditingServiceId(service._id);
+    setEditingServiceForm({
       id: service._id,
       name: service.name,
       description: service.description,
       durationMinutes: service.durationMinutes,
       category: service.category,
       capacity: service.capacity,
+      price: service.price ?? 0,
       active: Boolean(service.active),
     });
+  }
+
+  async function handleEditingServiceSubmit(event, serviceId) {
+    event.preventDefault();
+    setServiceLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      await apiRequest(
+        `/admin/services/${serviceId}`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: editingServiceForm.name,
+            description: editingServiceForm.description,
+            durationMinutes: Number(editingServiceForm.durationMinutes),
+            category: editingServiceForm.category,
+            capacity: Number(editingServiceForm.capacity),
+            price: Number(editingServiceForm.price),
+            active: editingServiceForm.active,
+          }),
+        }
+      );
+
+      setEditingServiceId('');
+      setEditingServiceForm(emptyServiceForm);
+      setMessage('Service updated.');
+      await loadAdminServices();
+      await refreshPublicData();
+    } catch (serviceError) {
+      if (!handleSessionError(serviceError)) {
+        setError(serviceError.message);
+      }
+    } finally {
+      setServiceLoading(false);
+    }
+  }
+
+  async function handleAttendanceUpdate(bookingId, attendanceStatus) {
+    setMessage('');
+    setError('');
+
+    try {
+      await apiRequest(
+        `/admin/bookings/${bookingId}/attendance`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ attendanceStatus }),
+        }
+      );
+
+      await loadBookings();
+      setMessage(attendanceStatus === 'Attended' ? 'Attendance confirmed.' : 'No-show recorded.');
+    } catch (attendanceError) {
+      if (!handleSessionError(attendanceError)) {
+        setError(attendanceError.message);
+      }
+    }
+  }
+
+  function startCreditReschedule(booking) {
+    const serviceId = String(booking.service?._id || booking.service || '');
+
+    setCreditBookingId(booking._id);
+    setRecentBooking(null);
+    setBookingForm({
+      ...emptyBookingForm,
+      serviceId,
+      locationId: booking.locationId || '',
+    });
+    setMemberPage('book');
+    setMessage(`Credit ready for ${booking.service?.name || 'Open Gym Session'}. Choose a new time to reschedule.`);
+    setError('');
   }
 
   async function handleDeactivateService(serviceId) {
@@ -700,14 +953,15 @@ export default function App() {
         `/admin/services/${serviceId}/deactivate`,
         {
           method: 'PATCH',
-        },
-        token
+        }
       );
       setMessage('Service deactivated.');
       await loadAdminServices();
       await refreshPublicData();
     } catch (deactivateError) {
-      setError(deactivateError.message);
+      if (!handleSessionError(deactivateError)) {
+        setError(deactivateError.message);
+      }
     }
   }
 
@@ -715,6 +969,12 @@ export default function App() {
   const now = new Date();
   const upcomingBookings = bookings.filter((booking) => new Date(booking.appointmentDate) >= now);
   const pastBookings = bookings.filter((booking) => new Date(booking.appointmentDate) < now);
+  const noShowBookings = bookings.filter((booking) => booking.attendanceStatus === 'No-show');
+  const openGymCreditBookings = noShowBookings.filter(
+    (booking) => isSelfLedService(booking.service) && booking.creditEligible && !booking.creditRedeemedForBookingId
+  );
+  const activeCreditBooking =
+    openGymCreditBookings.find((booking) => booking._id === creditBookingId) || null;
   const reviewLookup = new Set(reviews.map((review) => String(review.booking?._id || review.booking)));
   const reviewableBookings = pastBookings.filter((booking) => !reviewLookup.has(String(booking._id)));
   const isAdmin = user?.role === 'admin';
@@ -732,6 +992,11 @@ export default function App() {
     selectedBookingService?.bookingMode === 'self-led'
       ? []
       : selectedBookingSlot?.instructorOptions || selectedBookingLocation?.instructors || [];
+  const isUsingCreditForBooking =
+    Boolean(activeCreditBooking) &&
+    Boolean(selectedBookingService) &&
+    isSelfLedService(selectedBookingService) &&
+    String(activeCreditBooking.service?._id || activeCreditBooking.service) === String(selectedBookingService._id);
   const selectedOverrideService = adminServices.find((service) => service._id === overrideForm.serviceId) || adminServices[0] || null;
   const selectedOverrideLocation =
     selectedOverrideService?.locations?.find((location) => location.id === overrideForm.locationId) ||
@@ -742,10 +1007,77 @@ export default function App() {
     : [];
   const selectedOverrideSlot = overrideSlots.find((slot) => slot.time === overrideForm.time) || null;
   const overrideInstructorOptions = selectedOverrideSlot?.instructorOptions || selectedOverrideLocation?.instructors || [];
+  const activeAdminBookings = bookings.filter((booking) => !['Cancelled', 'Rejected'].includes(booking.status));
+  const cancelledAdminBookings = bookings.filter((booking) => booking.status === 'Cancelled');
+  const attendedAdminBookings = activeAdminBookings.filter((booking) => booking.attendanceStatus === 'Attended');
+  const noShowAdminBookings = bookings.filter((booking) => booking.attendanceStatus === 'No-show');
+  const todayIsoDate = new Date().toISOString().slice(0, 10);
+  const todayAdminBookings = activeAdminBookings.filter(
+    (booking) => new Date(booking.appointmentDate).toISOString().slice(0, 10) === todayIsoDate
+  );
+  function buildAdminSessions(sourceBookings) {
+    return sourceBookings
+      .slice()
+      .sort((left, right) => new Date(left.appointmentDate) - new Date(right.appointmentDate))
+      .reduce((sessions, booking) => {
+        const sessionKey = createSessionKey(booking);
+        const existingSession = sessions.find((session) => session.key === sessionKey);
+
+        if (existingSession) {
+          existingSession.bookings.push(booking);
+          existingSession.spotsLeft = Math.max(0, existingSession.capacity - existingSession.bookings.length);
+          return sessions;
+        }
+
+        const capacity = Number(booking.service?.capacity || 0);
+        sessions.push({
+          key: sessionKey,
+          serviceName: booking.service?.name || 'Service',
+          category: booking.service?.category || '',
+          appointmentDate: booking.appointmentDate,
+          locationName: booking.locationName,
+          locationAddress: booking.locationAddress,
+          instructorName: booking.instructorName,
+          capacity,
+          price: booking.paymentAmount || booking.service?.price || 0,
+          bookings: [booking],
+          spotsLeft: Math.max(0, capacity - 1),
+        });
+        return sessions;
+      }, [])
+      .map((session) => ({
+        ...session,
+        bookings: session.bookings
+          .slice()
+          .sort((left, right) => new Date(left.createdAt || 0) - new Date(right.createdAt || 0)),
+      }));
+  }
+
+  const adminUpcomingSessions = buildAdminSessions(
+    activeAdminBookings.filter((booking) => isUpcomingAppointment(booking.appointmentDate))
+  );
+  const adminCompletedSessions = buildAdminSessions(
+    activeAdminBookings.filter((booking) => !isUpcomingAppointment(booking.appointmentDate))
+  )
+    .slice()
+    .sort((left, right) => new Date(right.appointmentDate) - new Date(left.appointmentDate));
+  const serviceRatingsById = buildServiceRatingMap(reviews);
+  const locationCount = new Set(
+    services.flatMap((service) => (service.locations || []).map((location) => location.id || location.name))
+  ).size;
+  const calendarWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const currentMonthSessions = adminUpcomingSessions.filter((session) => {
+    const sessionDate = new Date(session.appointmentDate);
+    return (
+      sessionDate.getFullYear() === calendarMonthDate.getFullYear() &&
+      sessionDate.getMonth() === calendarMonthDate.getMonth()
+    );
+  });
+  const calendarCells = createCalendarCells(calendarMonthDate, currentMonthSessions);
   const heroStats = [
     { label: 'Services', value: services.length || '04' },
     { label: 'Reviews', value: reviews.length || '00' },
-    { label: isAdmin ? 'Requests' : 'Upcoming', value: isAdmin ? bookings.length : upcomingBookings.length },
+    { label: 'Locations', value: locationCount || '07' },
   ];
   const memberPages = [
     { id: 'book', label: 'Book' },
@@ -754,9 +1086,43 @@ export default function App() {
     { id: 'reviews', label: 'Reviews' },
     { id: 'about', label: 'About Us' },
   ];
+  const adminPages = [
+    { id: 'services', label: 'Services' },
+    { id: 'instructors', label: 'Instructors' },
+    { id: 'schedule', label: 'Schedule' },
+  ];
+  const activeNotice = error
+    ? { type: 'error', title: 'Something went wrong', text: error }
+    : message
+      ? { type: 'success', title: 'Done', text: message }
+      : null;
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [showAuth]);
+
+  if (authChecking) {
+    return (
+      <div className="app-shell">
+        <header className="hero">
+          <div className="hero-topline">
+            <p className="eyebrow">Wellness Center Studio</p>
+          </div>
+          <div className="hero-layout editorial-hero">
+            <div className="hero-copy-block editorial-copy-block">
+              <h1>Loading your secure session.</h1>
+              <p className="hero-copy">
+                Please wait a moment while we restore your dashboard.
+              </p>
+            </div>
+          </div>
+        </header>
+      </div>
+    );
+  }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${!showAuth && isAdmin ? ' admin-shell' : ''}`}>
       {showAuth ? (
         <header className="hero">
           <div className="hero-topline">
@@ -770,7 +1136,7 @@ export default function App() {
               </p>
               <p className="hero-copy">
                 Book pilates, massage, spa, and gym sessions in one refined space for members,
-                staff, approvals, schedules, and reviews.
+                staff, schedules, payments, and reviews.
               </p>
               <div className="hero-tags">
                 <span>Massage</span>
@@ -783,7 +1149,7 @@ export default function App() {
                   Demo admin login: <strong>admin@wellness.local</strong> with password <strong>admin123</strong>
                 </p>
                 <p className="demo-note">
-                  Demo member login: <strong>vitoria.test@example.com</strong> with password <strong>test1234</strong>
+                  Demo member login: <strong>vitoria.test@example.com</strong> or membership <strong>MEM-1001</strong> with password <strong>test1234</strong>
                 </p>
               </div>
             </div>
@@ -793,7 +1159,7 @@ export default function App() {
                 <img src={coverPicture} alt="Wellness hero" />
               </div>
               <div className="mosaic-insight">
-                <p className="hero-aside-label">Studio Snapshot</p>
+                <p className="hero-aside-label">How It Works</p>
                 <div className="hero-stat-grid">
                   {heroStats.map((stat) => (
                     <div key={stat.label} className="hero-stat-card">
@@ -803,7 +1169,7 @@ export default function App() {
                   ))}
                 </div>
                 <p className="hero-aside-note">
-                  A modern member experience with role-based flows, service management, and review tracking.
+                  Join with your email, pick a location and a real class time, then manage bookings, credits, and reviews from one calmer dashboard.
                 </p>
               </div>
             </aside>
@@ -839,11 +1205,32 @@ export default function App() {
               ))}
             </nav>
           ) : null}
+
+          {isAdmin ? (
+            <nav className="member-nav" aria-label="Admin navigation">
+              {adminPages.map((page) => (
+                <button
+                  key={page.id}
+                  type="button"
+                  className={adminPage === page.id ? 'member-nav-button active' : 'member-nav-button'}
+                  onClick={() => setAdminPage(page.id)}
+                >
+                  {page.label}
+                </button>
+              ))}
+            </nav>
+          ) : null}
         </>
       )}
 
-      {message ? <p className="success-message banner-message">{message}</p> : null}
-      {error ? <p className="error-message banner-message">{error}</p> : null}
+      {activeNotice ? (
+        <div className="notice-overlay" role="status" aria-live="polite">
+          <div className={`notice-modal ${activeNotice.type === 'error' ? 'error' : 'success'}`}>
+            <p className="notice-kicker">{activeNotice.title}</p>
+            <h2>{activeNotice.text}</h2>
+          </div>
+        </div>
+      ) : null}
 
       {showAuth ? (
         <main className="grid auth-grid">
@@ -886,15 +1273,7 @@ export default function App() {
                     required
                   />
                 </label>
-                <label>
-                  Membership number
-                  <input
-                    name="membershipNumber"
-                    value={registerForm.membershipNumber}
-                    onChange={updateForm(setRegisterForm)}
-                    required
-                  />
-                </label>
+                <p className="form-note">We’ll assign your membership number automatically after you register.</p>
                 <button type="submit" disabled={authLoading}>
                   {authLoading ? 'Creating account...' : 'Create account'}
                 </button>
@@ -903,8 +1282,14 @@ export default function App() {
               <form className="booking-form" onSubmit={handleLogin}>
                 <h2>Sign In</h2>
                 <label>
-                  Email
-                  <input name="email" type="email" value={loginForm.email} onChange={updateForm(setLoginForm)} required />
+                  Email or membership number
+                  <input
+                    name="identifier"
+                    type="text"
+                    value={loginForm.identifier}
+                    onChange={updateForm(setLoginForm)}
+                    required
+                  />
                 </label>
                 <label>
                   Password
@@ -931,20 +1316,21 @@ export default function App() {
             <div className="feature-stack">
               <article className="feature-card">
                 <h3>Members</h3>
-                <p>Create an account, browse services, request appointments, track your calendar, and leave reviews after completed visits.</p>
+                <p>Create an account, browse services, book live class times, track your schedule, and leave reviews after completed visits.</p>
               </article>
               <article className="feature-card">
                 <h3>Admins</h3>
-                <p>Review booking requests, approve schedules, and manage the live service menu from one calmer dashboard.</p>
+                <p>Manage service pricing, instructors, attendance, and the live schedule from one calmer dashboard.</p>
               </article>
               <article className="feature-card">
                 <h3>Reviews</h3>
-                <p>Members can share completed-service feedback, and the public experience stays grounded in recent reviews.</p>
+                <p>Members can share completed-service feedback, and the public experience stays grounded in recent studio reviews.</p>
               </article>
             </div>
             <div className="editorial-strip">
               {services.slice(0, 3).map((service) => {
                 const presentation = getServicePresentation(service);
+                const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
                 return (
                   <article key={service._id} className="editorial-card">
                     <div className="editorial-visual">
@@ -953,6 +1339,10 @@ export default function App() {
                     <div className="editorial-copy">
                       <p>{presentation.eyebrow}</p>
                       <h3>{service.name}</h3>
+                      <div className="service-rating service-rating-compact">
+                        <strong>{ratingSummary.stars}</strong>
+                        <span>{ratingSummary.label}</span>
+                      </div>
                     </div>
                   </article>
                 );
@@ -964,344 +1354,493 @@ export default function App() {
         <main className="grid">
           {isAdmin ? (
             <>
-              <section className="panel">
-                <div className="panel-heading">
-                  <p className="panel-kicker">Service Menu</p>
-                  <h2>Available Services</h2>
-                </div>
-                <p className="section-copy">Pick the service and time that fit your wellness plan.</p>
+              {adminPage === 'services' ? (
+                <>
+                  <section className="panel bookings-panel">
+                    <div className="panel-heading">
+                      <p className="panel-kicker">Service Menu</p>
+                      <h2>Available Services</h2>
+                    </div>
+                    <p className="section-copy">Review the live service lineup, pricing, and studio categories at a glance.</p>
 
-                {loadingServices ? (
-                  <p>Loading services...</p>
-                ) : (
-                  <div className="service-gallery">
-                    {services.map((service) => (
-                      (() => {
-                        const presentation = getServicePresentation(service);
-                        return (
-                          <article key={service._id} className="service-showcase-card">
-                            <div className="service-showcase-visual">
-                              <img src={presentation.image || coverPicture} alt={service.name} />
-                              <div className="service-showcase-overlay">
-                                <p>{presentation.eyebrow}</p>
-                                <h3>{service.name}</h3>
+                    {loadingServices ? (
+                      <p>Loading services...</p>
+                    ) : (
+                      <div className="service-gallery admin-service-gallery">
+                        {services.map((service) => {
+                          const presentation = getServicePresentation(service);
+                          const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
+                          return (
+                            <article key={service._id} className="service-showcase-card admin-service-showcase-card">
+                              <div className="service-showcase-visual admin-service-showcase-visual">
+                                <img src={presentation.image || coverPicture} alt={service.name} />
                               </div>
-                            </div>
-                            <div className="service-showcase-copy">
-                              <div className="service-showcase-meta">
-                                <span>{service.category}</span>
-                                <strong>{service.durationMinutes} min</strong>
+                              <div className="service-showcase-copy">
+                                <p className="service-showcase-kicker">{presentation.eyebrow}</p>
+                                <h3 className="admin-service-title">{service.name}</h3>
+                                <div className="service-showcase-meta">
+                                  <span>{service.category}</span>
+                                  <strong>{formatPrice(service.price)}</strong>
+                                </div>
+                                <div className="service-rating">
+                                  <strong>{ratingSummary.stars}</strong>
+                                  <span>{ratingSummary.label}</span>
+                                </div>
+                                <p>{presentation.blurb}</p>
+                                <div className="service-meta">
+                                  <span>{service.durationMinutes} min</span>
+                                  <span>{service.capacity} spots per slot</span>
+                                  <span>{isSelfLedService(service) ? 'Self-led session' : 'Instructor-led class'}</span>
+                                </div>
                               </div>
-                              <p>{presentation.blurb}</p>
-                              <div className="service-meta">
-                                <span>{service.capacity} spots per slot</span>
-                                <span>Booking approval included</span>
-                              </div>
-                            </div>
-                          </article>
-                        );
-                      })()
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              <section className="panel panel-emphasis">
-                <div className="panel-heading">
-                  <p className="panel-kicker">Operations</p>
-                  <h2>Admin Controls</h2>
-                </div>
-                <p className="section-copy">Review pending requests and keep the schedule moving.</p>
-                <div className="admin-summary">
-                  <div className="summary-card">
-                    <strong>{bookings.filter((booking) => booking.status === 'Pending').length}</strong>
-                    <span>Pending</span>
-                  </div>
-                  <div className="summary-card">
-                    <strong>{bookings.filter((booking) => booking.status === 'Approved').length}</strong>
-                    <span>Approved</span>
-                  </div>
-                  <div className="summary-card">
-                    <strong>{bookings.filter((booking) => booking.status === 'Rejected').length}</strong>
-                    <span>Rejected</span>
-                  </div>
-                </div>
-                <div className="member-stack admin-stack">
-                  <div>
-                    <h2>Manage Services</h2>
-                    <p className="section-copy">Create new offerings or update the existing ones.</p>
-                    <form className="booking-form" onSubmit={handleServiceSubmit}>
-                      <label>
-                        Service name
-                        <input name="name" value={serviceForm.name} onChange={updateForm(setServiceForm)} required />
-                      </label>
-                      <label>
-                        Description
-                        <textarea
-                          name="description"
-                          value={serviceForm.description}
-                          onChange={updateForm(setServiceForm)}
-                          rows="4"
-                          required
-                        />
-                      </label>
-                      <label>
-                        Category
-                        <input name="category" value={serviceForm.category} onChange={updateForm(setServiceForm)} required />
-                      </label>
-                      <label>
-                        Duration (minutes)
-                        <input
-                          name="durationMinutes"
-                          type="number"
-                          min="15"
-                          value={serviceForm.durationMinutes}
-                          onChange={updateForm(setServiceForm)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Capacity
-                        <input
-                          name="capacity"
-                          type="number"
-                          min="1"
-                          value={serviceForm.capacity}
-                          onChange={updateForm(setServiceForm)}
-                          required
-                        />
-                      </label>
-                      <label className="checkbox-row">
-                        <input
-                          name="active"
-                          type="checkbox"
-                          checked={serviceForm.active}
-                          onChange={(event) =>
-                            setServiceForm((current) => ({ ...current, active: event.target.checked }))
-                          }
-                        />
-                        Service is active
-                      </label>
-                      <div className="admin-actions">
-                        <button type="submit" disabled={serviceLoading}>
-                          {serviceLoading ? 'Saving...' : serviceForm.id ? 'Update service' : 'Create service'}
-                        </button>
-                        {serviceForm.id ? (
-                          <button type="button" className="secondary-button" onClick={() => setServiceForm(emptyServiceForm)}>
-                            Clear
-                          </button>
-                        ) : null}
+                            </article>
+                          );
+                        })}
                       </div>
-                    </form>
-                  </div>
+                    )}
+                  </section>
 
-                  <div>
-                    <h2>Service Catalog</h2>
-                    <p className="section-copy">Edit details or deactivate services that should no longer be booked.</p>
-                    <div className="service-list">
-                      {adminServices.map((service) => (
-                        <article key={service._id} className="service-card">
-                          <div className="service-card-header">
-                            <h3>{service.name}</h3>
-                            <span>{service.active ? 'Active' : 'Inactive'}</span>
-                          </div>
-                          <p>{service.description}</p>
-                          <div className="service-meta">
-                            <strong>{service.durationMinutes} minutes</strong>
-                            <span>{service.capacity} spots</span>
-                          </div>
+                  <section className="panel panel-emphasis bookings-panel">
+                    <div className="panel-heading">
+                      <p className="panel-kicker">Operations</p>
+                      <h2>Admin Controls</h2>
+                    </div>
+                    <p className="section-copy">Create new services up top, then edit or deactivate each existing service inline below.</p>
+                    <div className="admin-summary">
+                      <div className="summary-card">
+                        <strong>{activeAdminBookings.length}</strong>
+                        <span>Booked</span>
+                      </div>
+                      <div className="summary-card">
+                        <strong>{todayAdminBookings.length}</strong>
+                        <span>Today</span>
+                      </div>
+                      <div className="summary-card">
+                        <strong>{cancelledAdminBookings.length}</strong>
+                        <span>Cancelled</span>
+                      </div>
+                    </div>
+                    <div className="member-stack admin-stack">
+                      <div>
+                        <h2>Create a New Service</h2>
+                        <p className="section-copy">Add a fresh service to the booking menu with its duration, price, and capacity.</p>
+                        <form className="booking-form" onSubmit={handleServiceSubmit}>
+                          <label>
+                            Service name
+                            <input name="name" value={serviceForm.name} onChange={updateForm(setServiceForm)} required />
+                          </label>
+                          <label>
+                            Description
+                            <textarea
+                              name="description"
+                              value={serviceForm.description}
+                              onChange={updateForm(setServiceForm)}
+                              rows="4"
+                              required
+                            />
+                          </label>
+                          <label>
+                            Category
+                            <input name="category" value={serviceForm.category} onChange={updateForm(setServiceForm)} required />
+                          </label>
+                          <label>
+                            Duration (minutes)
+                            <input
+                              name="durationMinutes"
+                              type="number"
+                              min="15"
+                              value={serviceForm.durationMinutes}
+                              onChange={updateForm(setServiceForm)}
+                              required
+                            />
+                          </label>
+                          <label>
+                            Capacity
+                            <input
+                              name="capacity"
+                              type="number"
+                              min="1"
+                              value={serviceForm.capacity}
+                              onChange={updateForm(setServiceForm)}
+                              required
+                            />
+                          </label>
+                          <label>
+                            Price
+                            <input
+                              name="price"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={serviceForm.price}
+                              onChange={updateForm(setServiceForm)}
+                              required
+                            />
+                          </label>
+                          <label className="checkbox-row">
+                            <input
+                              name="active"
+                              type="checkbox"
+                              checked={serviceForm.active}
+                              onChange={(event) =>
+                                setServiceForm((current) => ({ ...current, active: event.target.checked }))
+                              }
+                            />
+                            Service is active
+                          </label>
                           <div className="admin-actions">
-                            <button type="button" onClick={() => startEditingService(service)}>
-                              Edit
+                            <button type="submit" disabled={serviceLoading}>
+                              {serviceLoading ? 'Saving...' : 'Create service'}
                             </button>
-                            {service.active ? (
-                              <button type="button" className="danger-button" onClick={() => handleDeactivateService(service._id)}>
-                                Deactivate
-                              </button>
-                            ) : null}
                           </div>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
+                        </form>
+                      </div>
 
-                  <div>
-                    <h2>Instructor Schedule</h2>
-                    <p className="section-copy">Assign a one-time instructor change for a specific class time and location.</p>
-                    <div className="booking-insight-row">
-                      <article className="booking-helper-card booking-helper-card-compact">
-                        <strong>Selected service</strong>
-                        <span>{selectedOverrideService?.name || 'Choose a service'}</span>
-                      </article>
-                      <article className="booking-helper-card booking-helper-card-compact">
-                        <strong>Location team</strong>
-                        <span>
-                          {selectedOverrideLocation
-                            ? `${selectedOverrideLocation.name} · ${selectedOverrideLocation.instructors.length || 0} instructors`
-                            : 'Choose a location to see your instructor pool.'}
-                        </span>
-                      </article>
-                    </div>
-                    <form className="booking-form" onSubmit={handleOverrideSubmit}>
-                      <div className="form-grid-two">
-                        <label>
-                          Service
-                          <select
-                            name="serviceId"
-                            value={overrideForm.serviceId}
-                            onChange={(event) => {
-                              const nextService = adminServices.find((service) => service._id === event.target.value);
-                              setOverrideForm((current) => ({
-                                ...current,
-                                serviceId: event.target.value,
-                                locationId: nextService?.locations?.[0]?.id || '',
-                                date: '',
-                                time: '',
-                                instructorName: '',
-                              }));
-                            }}
-                            required
-                          >
-                            {adminServices.map((service) => (
-                              <option key={service._id} value={service._id}>
-                                {service.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Location
-                          <select
-                            name="locationId"
-                            value={overrideForm.locationId}
-                            onChange={(event) =>
-                              setOverrideForm((current) => ({
-                                ...current,
-                                locationId: event.target.value,
-                                time: '',
-                                instructorName: '',
-                              }))
-                            }
-                            required
-                          >
-                            {(selectedOverrideService?.locations || []).map((location) => (
-                              <option key={location.id} value={location.id}>
-                                {location.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Date
-                          <input
-                            name="date"
-                            type="date"
-                            value={overrideForm.date}
-                            min={new Date().toISOString().slice(0, 10)}
-                            onChange={(event) =>
-                              setOverrideForm((current) => ({
-                                ...current,
-                                date: event.target.value,
-                                time: '',
-                                instructorName: '',
-                              }))
-                            }
-                            required
-                          />
-                        </label>
-                        <label>
-                          Class time
-                          <select
-                            name="time"
-                            value={overrideForm.time}
-                            onChange={(event) =>
-                              setOverrideForm((current) => ({
-                                ...current,
-                                time: event.target.value,
-                                instructorName:
-                                  overrideSlots.find((slot) => slot.time === event.target.value)?.defaultInstructor || '',
-                              }))
-                            }
-                            disabled={!overrideForm.date}
-                            required
-                          >
-                            <option value="">{overrideForm.date ? 'Select a class time' : 'Choose a date first'}</option>
-                            {overrideSlots.map((slot) => (
-                              <option key={slot.time} value={slot.time}>
-                                {slot.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Instructor
-                          <select
-                            name="instructorName"
-                            value={overrideForm.instructorName}
-                            onChange={updateForm(setOverrideForm)}
-                            disabled={!overrideForm.time}
-                            required
-                          >
-                            <option value="">{overrideForm.time ? 'Select instructor' : 'Choose a time first'}</option>
-                            {overrideInstructorOptions.map((instructor) => (
-                              <option key={instructor} value={instructor}>
-                                {instructor}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <div className="booking-helper-card booking-helper-card-compact">
-                          <strong>Override preview</strong>
-                          <span>
-                            {overrideForm.date && overrideForm.time
-                              ? `${overrideForm.date} at ${formatTimeLabel(overrideForm.time)}`
-                              : 'Pick a date and time to preview the override.'}
-                          </span>
+                      <div>
+                        <h2>Service Catalog</h2>
+                        <p className="section-copy">Use each card below to edit pricing, capacity, descriptions, or active status without leaving the list.</p>
+                        <div className="service-list">
+                          {adminServices.map((service) => {
+                            const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
+                            return (
+                            <article key={service._id} className="service-card">
+                              <div className="service-card-header">
+                                <h3>{service.name}</h3>
+                                <span>{service.active ? 'Active' : 'Inactive'}</span>
+                              </div>
+                              <p>{service.description}</p>
+                              <div className="service-rating">
+                                <strong>{ratingSummary.stars}</strong>
+                                <span>{ratingSummary.label}</span>
+                              </div>
+                              <div className="service-meta">
+                                <strong>{formatPrice(service.price)}</strong>
+                                <span>{service.durationMinutes} minutes</span>
+                                <span>{service.capacity} spots</span>
+                                <span>{service.category}</span>
+                              </div>
+
+                              {editingServiceId === service._id ? (
+                                <form className="booking-form inline-service-editor" onSubmit={(event) => handleEditingServiceSubmit(event, service._id)}>
+                                  <div className="form-grid-two">
+                                    <label>
+                                      Service name
+                                      <input
+                                        name="name"
+                                        value={editingServiceForm.name}
+                                        onChange={updateForm(setEditingServiceForm)}
+                                        required
+                                      />
+                                    </label>
+                                    <label>
+                                      Category
+                                      <input
+                                        name="category"
+                                        value={editingServiceForm.category}
+                                        onChange={updateForm(setEditingServiceForm)}
+                                        required
+                                      />
+                                    </label>
+                                    <label>
+                                      Duration (minutes)
+                                      <input
+                                        name="durationMinutes"
+                                        type="number"
+                                        min="15"
+                                        value={editingServiceForm.durationMinutes}
+                                        onChange={updateForm(setEditingServiceForm)}
+                                        required
+                                      />
+                                    </label>
+                                    <label>
+                                      Capacity
+                                      <input
+                                        name="capacity"
+                                        type="number"
+                                        min="1"
+                                        value={editingServiceForm.capacity}
+                                        onChange={updateForm(setEditingServiceForm)}
+                                        required
+                                      />
+                                    </label>
+                                    <label>
+                                      Price
+                                      <input
+                                        name="price"
+                                        type="number"
+                                        min="0"
+                                        step="0.01"
+                                        value={editingServiceForm.price}
+                                        onChange={updateForm(setEditingServiceForm)}
+                                        required
+                                      />
+                                    </label>
+                                    <label className="checkbox-row">
+                                      <input
+                                        name="active"
+                                        type="checkbox"
+                                        checked={editingServiceForm.active}
+                                        onChange={(event) =>
+                                          setEditingServiceForm((current) => ({
+                                            ...current,
+                                            active: event.target.checked,
+                                          }))
+                                        }
+                                      />
+                                      Service is active
+                                    </label>
+                                  </div>
+                                  <label>
+                                    Description
+                                    <textarea
+                                      name="description"
+                                      value={editingServiceForm.description}
+                                      onChange={updateForm(setEditingServiceForm)}
+                                      rows="4"
+                                      required
+                                    />
+                                  </label>
+                                  <div className="admin-actions">
+                                    <button type="submit" disabled={serviceLoading}>
+                                      {serviceLoading ? 'Saving...' : 'Save changes'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => {
+                                        setEditingServiceId('');
+                                        setEditingServiceForm(emptyServiceForm);
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </form>
+                              ) : null}
+
+                              <div className="admin-actions">
+                                <button type="button" onClick={() => startEditingService(service)}>
+                                  {editingServiceId === service._id ? 'Close editor' : 'Edit'}
+                                </button>
+                                {service.active ? (
+                                  <button type="button" className="danger-button" onClick={() => handleDeactivateService(service._id)}>
+                                    Deactivate
+                                  </button>
+                                ) : null}
+                              </div>
+                            </article>
+                          )})}
                         </div>
                       </div>
-                      <button type="submit" disabled={overrideLoading}>
-                        {overrideLoading ? 'Saving...' : 'Save instructor change'}
-                      </button>
-                    </form>
+                    </div>
+                  </section>
+                </>
+              ) : null}
 
-                    <div className="service-list admin-override-list">
-                      {(selectedOverrideService?.scheduleOverrides || []).length === 0 ? (
-                        <p>No instructor changes have been scheduled yet.</p>
-                      ) : (
-                        selectedOverrideService.scheduleOverrides
-                          .slice()
-                          .sort((left, right) =>
-                            `${left.date}-${left.time}`.localeCompare(`${right.date}-${right.time}`)
-                          )
-                          .map((override) => {
-                            const overrideLocation = selectedOverrideService.locations.find((location) => location.id === override.locationId);
-                            return (
-                              <article key={override.id} className="service-card">
-                                <div className="service-card-header">
-                                  <h3>{override.instructorName}</h3>
-                                  <span>{formatTimeLabel(override.time)}</span>
-                                </div>
-                                <p>
-                                  {override.date} at {overrideLocation?.name || 'Selected location'}
-                                </p>
-                                <p>{overrideLocation?.address}</p>
-                                <div className="admin-actions">
-                                  <button
-                                    type="button"
-                                    className="danger-button"
-                                    onClick={() => handleRemoveOverride(selectedOverrideService._id, override.id)}
-                                  >
-                                    Remove override
-                                  </button>
-                                </div>
-                              </article>
-                            );
-                          })
-                      )}
+              {adminPage === 'instructors' ? (
+                <section className="panel panel-emphasis">
+                  <div className="panel-heading">
+                    <p className="panel-kicker">Instructor Schedule</p>
+                    <h2>Instructor Overrides</h2>
+                  </div>
+                  <p className="section-copy">Assign a one-time instructor change for a specific class time and location.</p>
+                  <div className="booking-insight-row">
+                    <article className="booking-helper-card booking-helper-card-compact">
+                      <strong>Selected service</strong>
+                      <span>{selectedOverrideService?.name || 'Choose a service'}</span>
+                    </article>
+                    <article className="booking-helper-card booking-helper-card-compact">
+                      <strong>Location team</strong>
+                      <span>
+                        {selectedOverrideLocation
+                          ? `${selectedOverrideLocation.name} · ${selectedOverrideLocation.instructors.length || 0} instructors`
+                          : 'Choose a location to see your instructor pool.'}
+                      </span>
+                    </article>
+                  </div>
+                  <form className="booking-form" onSubmit={handleOverrideSubmit}>
+                    <div className="form-grid-two">
+                      <label>
+                        Service
+                        <select
+                          name="serviceId"
+                          value={overrideForm.serviceId}
+                          onChange={(event) => {
+                            const nextService = adminServices.find((service) => service._id === event.target.value);
+                            setOverrideForm((current) => ({
+                              ...current,
+                              serviceId: event.target.value,
+                              locationId: nextService?.locations?.[0]?.id || '',
+                              date: '',
+                              time: '',
+                              instructorName: '',
+                            }));
+                          }}
+                          required
+                        >
+                          {adminServices.map((service) => (
+                            <option key={service._id} value={service._id}>
+                              {service.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Location
+                        <select
+                          name="locationId"
+                          value={overrideForm.locationId}
+                          onChange={(event) =>
+                            setOverrideForm((current) => ({
+                              ...current,
+                              locationId: event.target.value,
+                              time: '',
+                              instructorName: '',
+                            }))
+                          }
+                          required
+                        >
+                          {(selectedOverrideService?.locations || []).map((location) => (
+                            <option key={location.id} value={location.id}>
+                              {location.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Date
+                        <input
+                          name="date"
+                          type="date"
+                          value={overrideForm.date}
+                          min={new Date().toISOString().slice(0, 10)}
+                          onChange={(event) =>
+                            setOverrideForm((current) => ({
+                              ...current,
+                              date: event.target.value,
+                              time: '',
+                              instructorName: '',
+                            }))
+                          }
+                          required
+                        />
+                      </label>
+                      <label>
+                        Class time
+                        <select
+                          name="time"
+                          value={overrideForm.time}
+                          onChange={(event) =>
+                            setOverrideForm((current) => ({
+                              ...current,
+                              time: event.target.value,
+                              instructorName:
+                                overrideSlots.find((slot) => slot.time === event.target.value)?.defaultInstructor || '',
+                            }))
+                          }
+                          disabled={!overrideForm.date}
+                          required
+                        >
+                          <option value="">{overrideForm.date ? 'Select a class time' : 'Choose a date first'}</option>
+                          {overrideSlots.map((slot) => (
+                            <option key={slot.time} value={slot.time}>
+                              {slot.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Instructor
+                        <select
+                          name="instructorName"
+                          value={overrideForm.instructorName}
+                          onChange={updateForm(setOverrideForm)}
+                          disabled={!overrideForm.time}
+                          required
+                        >
+                          <option value="">{overrideForm.time ? 'Select instructor' : 'Choose a time first'}</option>
+                          {overrideInstructorOptions.map((instructor) => (
+                            <option key={instructor} value={instructor}>
+                              {instructor}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="booking-helper-card booking-helper-card-compact">
+                        <strong>Override preview</strong>
+                        <span>
+                          {overrideForm.date && overrideForm.time
+                            ? `${overrideForm.date} at ${formatTimeLabel(overrideForm.time)}`
+                            : 'Pick a date and time to preview the override.'}
+                        </span>
+                      </div>
+                    </div>
+                    <button type="submit" disabled={overrideLoading}>
+                      {overrideLoading ? 'Saving...' : 'Save instructor change'}
+                    </button>
+                  </form>
+
+                  <div className="service-list admin-override-list">
+                    {(selectedOverrideService?.scheduleOverrides || []).length === 0 ? (
+                      <p>No instructor changes have been scheduled yet.</p>
+                    ) : (
+                      selectedOverrideService.scheduleOverrides
+                        .slice()
+                        .sort((left, right) =>
+                          `${left.date}-${left.time}`.localeCompare(`${right.date}-${right.time}`)
+                        )
+                        .map((override) => {
+                          const overrideLocation = selectedOverrideService.locations.find((location) => location.id === override.locationId);
+                          return (
+                            <article key={override.id} className="service-card">
+                              <div className="service-card-header">
+                                <h3>{override.instructorName}</h3>
+                                <span>{formatTimeLabel(override.time)}</span>
+                              </div>
+                              <p>
+                                {override.date} at {overrideLocation?.name || 'Selected location'}
+                              </p>
+                              <p>{overrideLocation?.address}</p>
+                              <div className="admin-actions">
+                                <button
+                                  type="button"
+                                  className="danger-button"
+                                  onClick={() => handleRemoveOverride(selectedOverrideService._id, override.id)}
+                                >
+                                  Remove override
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })
+                    )}
+                  </div>
+                </section>
+              ) : null}
+
+              {adminPage === 'schedule' ? (
+                <section className="panel panel-emphasis">
+                  <div className="panel-heading">
+                    <p className="panel-kicker">Schedule</p>
+                    <h2>Attendance & Session Overview</h2>
+                  </div>
+                  <p className="section-copy">Track what is booked today, confirm attendance after class time, and watch for no-shows or cancellations.</p>
+                  <div className="admin-summary">
+                    <div className="summary-card">
+                      <strong>{todayAdminBookings.length}</strong>
+                      <span>Today</span>
+                    </div>
+                    <div className="summary-card">
+                      <strong>{attendedAdminBookings.length}</strong>
+                      <span>Attended</span>
+                    </div>
+                    <div className="summary-card">
+                      <strong>{noShowAdminBookings.length}</strong>
+                      <span>No-shows</span>
                     </div>
                   </div>
-                </div>
-              </section>
+                </section>
+              ) : null}
             </>
           ) : (
             <>
@@ -1312,7 +1851,7 @@ export default function App() {
                       <p className="panel-kicker">Service Menu</p>
                       <h2>Book a Class or Service</h2>
                     </div>
-                    <p className="section-copy">Choose the experience that fits your week, then send your preferred time.</p>
+                    <p className="section-copy">Choose the experience that fits your week, see the live price, and book with checkout in one step.</p>
 
                     {loadingServices ? (
                       <p>Loading services...</p>
@@ -1321,6 +1860,7 @@ export default function App() {
                         {services.map((service) => (
                           (() => {
                             const presentation = getServicePresentation(service);
+                            const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
                             return (
                               <article key={service._id} className="service-showcase-card">
                                 <div className="service-showcase-visual">
@@ -1331,17 +1871,22 @@ export default function App() {
                                   </div>
                                 </div>
                                 <div className="service-showcase-copy">
-                                  <div className="service-showcase-meta">
-                                    <span>{service.category}</span>
-                                    <strong>{service.durationMinutes} min</strong>
-                                  </div>
-                                  <p>{presentation.blurb}</p>
-                                  <div className="service-meta">
-                                    <span>{service.capacity} spots per slot</span>
-                                    <span>Booking approval included</span>
-                                  </div>
+                                <div className="service-showcase-meta">
+                                  <span>{service.category}</span>
+                                  <strong>{formatPrice(service.price)}</strong>
                                 </div>
-                              </article>
+                                <div className="service-rating">
+                                  <strong>{ratingSummary.stars}</strong>
+                                  <span>{ratingSummary.label}</span>
+                                </div>
+                                <p>{presentation.blurb}</p>
+                                <div className="service-meta">
+                                  <span>{service.durationMinutes} min</span>
+                                  <span>{isSelfLedService(service) ? 'Flexible entry window' : `${service.capacity} spots per slot`}</span>
+                                  <span>Instant booking included</span>
+                                </div>
+                              </div>
+                            </article>
                             );
                           })()
                         ))}
@@ -1350,173 +1895,304 @@ export default function App() {
                   </section>
 
                   <section className="panel panel-emphasis">
-                    <div className="panel-heading compact-heading">
-                      <p className="panel-kicker">Reservation</p>
-                      <h2>Reserve Your Spot</h2>
-                    </div>
-                    <p className="section-copy">Your member details are already connected, so all you need is the service, date, and any helpful notes.</p>
-                    <div className="booking-insight-row">
-                      <article className="booking-helper-card booking-helper-card-compact">
-                        <strong>Location</strong>
-                        <span>
-                          {selectedBookingLocation
-                            ? `${selectedBookingLocation.name} · ${selectedBookingLocation.address}`
-                            : 'Choose a service to see available locations.'}
-                        </span>
-                      </article>
-                      <article className="booking-helper-card booking-helper-card-compact">
-                        <strong>Schedule cadence</strong>
-                        <span>
-                          {selectedBookingService
-                            ? `${selectedBookingService.durationMinutes} minute sessions every ${selectedBookingService.schedule?.intervalMinutes || selectedBookingService.durationMinutes} minutes`
-                            : 'Select a service to see timing details.'}
-                        </span>
-                      </article>
-                    </div>
-                    <form className="booking-form" onSubmit={handleBookingSubmit}>
-                      <div className="form-grid-two">
-                        <label>
-                          Service
-                          <select
-                            name="serviceId"
-                            value={bookingForm.serviceId}
-                            onChange={(event) => {
-                              const nextService = services.find((service) => service._id === event.target.value);
-                              setBookingForm((current) => ({
-                                ...current,
-                                serviceId: event.target.value,
-                                locationId: nextService?.locations?.[0]?.id || '',
-                                bookingDate: '',
-                                slotTime: '',
-                                instructorName: '',
-                              }));
-                            }}
-                            required
-                          >
-                            {services.map((service) => (
-                              <option key={service._id} value={service._id}>
-                                {service.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-
-                        <label>
-                          Location
-                          <select
-                            name="locationId"
-                            value={bookingForm.locationId}
-                            onChange={(event) =>
-                              setBookingForm((current) => ({
-                                ...current,
-                                locationId: event.target.value,
-                                slotTime: '',
-                                instructorName: '',
-                              }))
-                            }
-                            required
-                          >
-                            {(selectedBookingService?.locations || []).map((location) => (
-                              <option key={location.id} value={location.id}>
-                                {location.name} - {location.address}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-
-                        <label>
-                          Date
-                          <input
-                            name="bookingDate"
-                            type="date"
-                            value={bookingForm.bookingDate}
-                            min={new Date().toISOString().slice(0, 10)}
-                            onChange={(event) =>
-                              setBookingForm((current) => ({
-                                ...current,
-                                bookingDate: event.target.value,
-                                slotTime: '',
-                                instructorName: '',
-                              }))
-                            }
-                            required
-                          />
-                        </label>
-
-                        <label>
-                          Available class time
-                          <select
-                            name="slotTime"
-                            value={bookingForm.slotTime}
-                            onChange={(event) => {
-                              const nextSlot = availableBookingSlots.find((slot) => slot.time === event.target.value);
-                              setBookingForm((current) => ({
-                                ...current,
-                                slotTime: event.target.value,
-                                instructorName:
-                                  selectedBookingService?.bookingMode === 'self-led'
-                                    ? ''
-                                    : nextSlot?.defaultInstructor || '',
-                              }));
-                            }}
-                            required
-                            disabled={!bookingForm.bookingDate}
-                          >
-                            <option value="">{bookingForm.bookingDate ? 'Select a class time' : 'Choose a date first'}</option>
-                            {availableBookingSlots.map((slot) => (
-                              <option key={slot.time} value={slot.time}>
-                                {slot.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-
-                      {selectedBookingService?.bookingMode === 'instructor-led' ? (
-                        <div className="form-grid-two">
-                          <label>
-                            Instructor
-                            <select
-                              name="instructorName"
-                              value={bookingForm.instructorName}
-                              onChange={updateForm(setBookingForm)}
-                              required
-                              disabled={!bookingForm.slotTime}
-                            >
-                              <option value="">{bookingForm.slotTime ? 'Select an instructor' : 'Choose a time first'}</option>
-                              {bookingInstructorOptions.map((instructor) => (
-                                <option key={instructor} value={instructor}>
-                                  {instructor}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <div className="booking-helper-card booking-helper-card-compact">
-                            <strong>Selected instructor</strong>
-                            <span>{bookingForm.instructorName || 'An instructor will appear once you choose a class time.'}</span>
+                    {recentBooking ? (
+                      <div className="booking-confirmation">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Class Booked</p>
+                          <h2>You’re confirmed.</h2>
+                        </div>
+                        <p className="section-copy">
+                          Your spot has been reserved and payment has already been processed.
+                        </p>
+                        <div className="booking-insight-row">
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Service</strong>
+                            <span>{recentBooking.service?.name || 'Booked service'}</span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>When</strong>
+                            <span>{formatBookingDate(recentBooking.appointmentDate)}</span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Where</strong>
+                            <span>{recentBooking.locationName}</span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Paid</strong>
+                            <span>
+                              {recentBooking.paymentStatus === 'Credit Applied'
+                                ? 'Credit applied'
+                                : formatPrice(recentBooking.paymentAmount || recentBooking.service?.price || 0)}
+                            </span>
+                          </article>
+                        </div>
+                        {recentBooking.instructorName ? (
+                          <div className="booking-helper-card">
+                            <strong>Instructor</strong>
+                            <span>{recentBooking.instructorName}</span>
                           </div>
+                        ) : null}
+                        <div className="admin-actions">
+                          <button type="button" onClick={() => setRecentBooking(null)}>
+                            Schedule another
+                          </button>
+                          <button type="button" className="secondary-button" onClick={() => setMemberPage('schedule')}>
+                            View my schedule
+                          </button>
                         </div>
-                      ) : (
-                        <div className="booking-helper-card">
-                          <strong>Self-led session</strong>
-                          <span>Open Gym sessions do not require an instructor selection.</span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Reservation</p>
+                          <h2>Reserve Your Spot</h2>
                         </div>
-                      )}
+                        <p className="section-copy">Your member details are already connected, so all you need is the service, date, and any helpful notes.</p>
+                        <div className="booking-insight-row">
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Location</strong>
+                            <span>
+                              {selectedBookingLocation
+                                ? `${selectedBookingLocation.name} · ${selectedBookingLocation.address}`
+                                : 'Choose a service to see available locations.'}
+                            </span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Schedule cadence</strong>
+                            <span>
+                              {selectedBookingService
+                                ? `${selectedBookingService.durationMinutes} minute sessions every ${selectedBookingService.schedule?.intervalMinutes || selectedBookingService.durationMinutes} minutes`
+                                : 'Select a service to see timing details.'}
+                            </span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Amount due</strong>
+                            <span>
+                              {isUsingCreditForBooking
+                                ? 'Credit applied to this Open Gym reschedule'
+                                : selectedBookingService
+                                  ? `${formatPrice(selectedBookingService.price)} paid at booking`
+                                  : 'Choose a service to see the class price.'}
+                            </span>
+                          </article>
+                          {activeCreditBooking ? (
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Credit selected</strong>
+                              <span>
+                                {activeCreditBooking.locationName} · {formatBookingDate(activeCreditBooking.appointmentDate)}
+                              </span>
+                            </article>
+                          ) : null}
+                        </div>
+                        <form className="booking-form" onSubmit={handleBookingSubmit}>
+                          <div className="form-grid-two">
+                            <label>
+                              Service
+                              <select
+                                name="serviceId"
+                                value={bookingForm.serviceId}
+                                onChange={(event) => {
+                                  const nextService = services.find((service) => service._id === event.target.value);
+                                  setBookingForm((current) => ({
+                                    ...current,
+                                    serviceId: event.target.value,
+                                    locationId: nextService?.locations?.[0]?.id || '',
+                                    bookingDate: '',
+                                    slotTime: '',
+                                    instructorName: '',
+                                  }));
+                                }}
+                                required
+                              >
+                                {services.map((service) => (
+                                  <option key={service._id} value={service._id}>
+                                    {service.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
 
-                      <label>
-                        Notes
-                        <textarea
-                          name="notes"
-                          value={bookingForm.notes}
-                          onChange={updateForm(setBookingForm)}
-                          rows="4"
-                          placeholder="Optional notes for the wellness staff"
-                        />
-                      </label>
-                      <button type="submit" disabled={bookingLoading || loadingServices}>
-                        {bookingLoading ? 'Submitting...' : 'Book this class'}
-                      </button>
-                    </form>
+                            <label>
+                              Location
+                              <select
+                                name="locationId"
+                                value={bookingForm.locationId}
+                                onChange={(event) =>
+                                  setBookingForm((current) => ({
+                                    ...current,
+                                    locationId: event.target.value,
+                                    slotTime: '',
+                                    instructorName: '',
+                                  }))
+                                }
+                                required
+                              >
+                                {(selectedBookingService?.locations || []).map((location) => (
+                                  <option key={location.id} value={location.id}>
+                                    {location.name} - {location.address}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+
+                            <label>
+                              Date
+                              <input
+                                name="bookingDate"
+                                type="date"
+                                value={bookingForm.bookingDate}
+                                min={new Date().toISOString().slice(0, 10)}
+                                onChange={(event) =>
+                                  setBookingForm((current) => ({
+                                    ...current,
+                                    bookingDate: event.target.value,
+                                    slotTime: '',
+                                    instructorName: '',
+                                  }))
+                                }
+                                required
+                              />
+                            </label>
+
+                            <label>
+                              Available class time
+                              <select
+                                name="slotTime"
+                                value={bookingForm.slotTime}
+                                onChange={(event) => {
+                                  const nextSlot = availableBookingSlots.find((slot) => slot.time === event.target.value);
+                                  setBookingForm((current) => ({
+                                    ...current,
+                                    slotTime: event.target.value,
+                                    instructorName:
+                                      selectedBookingService?.bookingMode === 'self-led'
+                                        ? ''
+                                        : nextSlot?.defaultInstructor || '',
+                                  }));
+                                }}
+                                required
+                                disabled={!bookingForm.bookingDate}
+                              >
+                                <option value="">{bookingForm.bookingDate ? 'Select a class time' : 'Choose a date first'}</option>
+                                {availableBookingSlots.map((slot) => (
+                                  <option key={slot.time} value={slot.time}>
+                                    {slot.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+
+                          {selectedBookingService?.bookingMode === 'instructor-led' ? (
+                            <div className="form-grid-two">
+                              <label>
+                                Instructor
+                                <select
+                                  name="instructorName"
+                                  value={bookingForm.instructorName}
+                                  onChange={updateForm(setBookingForm)}
+                                  required
+                                  disabled={!bookingForm.slotTime}
+                                >
+                                  <option value="">{bookingForm.slotTime ? 'Select an instructor' : 'Choose a time first'}</option>
+                                  {bookingInstructorOptions.map((instructor) => (
+                                    <option key={instructor} value={instructor}>
+                                      {instructor}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <div className="booking-helper-card booking-helper-card-compact">
+                                <strong>Selected instructor</strong>
+                                <span>{bookingForm.instructorName || 'An instructor will appear once you choose a class time.'}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="booking-helper-card">
+                              <strong>Self-led session</strong>
+                              <span>Open Gym sessions do not require an instructor selection.</span>
+                            </div>
+                          )}
+
+                          <label>
+                            Notes
+                            <textarea
+                              name="notes"
+                              value={bookingForm.notes}
+                              onChange={updateForm(setBookingForm)}
+                              rows="4"
+                              placeholder="Optional notes for the wellness staff"
+                            />
+                          </label>
+                          {isUsingCreditForBooking ? (
+                            <div className="payment-panel">
+                              <div className="panel-heading compact-heading">
+                                <p className="panel-kicker">Credit</p>
+                                <h3>Use your Open Gym credit</h3>
+                              </div>
+                              <p className="price-note">No new payment is needed for this rescheduled Open Gym session.</p>
+                              <p className="form-note">
+                                Your previous no-show created a one-time credit. Once this new class is booked, that credit will be marked as used.
+                              </p>
+                              <div className="admin-actions">
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => setCreditBookingId('')}
+                                >
+                                  Remove credit
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="payment-panel">
+                              <div className="panel-heading compact-heading">
+                                <p className="panel-kicker">Checkout</p>
+                                <h3>Pay for this booking</h3>
+                              </div>
+                              <p className="price-note">
+                                {selectedBookingService
+                                  ? `${selectedBookingService.name} · ${formatPrice(selectedBookingService.price)}`
+                                  : 'Choose a service to see your total.'}
+                              </p>
+                              <div className="form-grid-two">
+                                <label>
+                                  Cardholder name
+                                  <input
+                                    name="paymentCardholderName"
+                                    value={bookingForm.paymentCardholderName}
+                                    onChange={updateForm(setBookingForm)}
+                                    placeholder="Name on card"
+                                    required
+                                  />
+                                </label>
+                                <label>
+                                  Card number
+                                  <input
+                                    name="paymentCardNumber"
+                                    value={bookingForm.paymentCardNumber}
+                                    onChange={updateForm(setBookingForm)}
+                                    inputMode="numeric"
+                                    placeholder="4242 4242 4242 4242"
+                                    required
+                                  />
+                                </label>
+                              </div>
+                              <p className="form-note">Demo checkout only. We save the amount and last 4 digits, not the full card number.</p>
+                            </div>
+                          )}
+                          <button type="submit" disabled={bookingLoading || loadingServices}>
+                            {bookingLoading
+                              ? 'Processing...'
+                              : isUsingCreditForBooking
+                                ? 'Use credit and book'
+                                : selectedBookingService
+                                  ? `Pay ${formatPrice(selectedBookingService.price)} and book`
+                                  : 'Pay and book'}
+                          </button>
+                        </form>
+                      </>
+                    )}
                   </section>
                 </>
               ) : null}
@@ -1537,6 +2213,7 @@ export default function App() {
                   {loadingBookings ? (
                     <p>Loading bookings...</p>
                   ) : (
+                    <>
                     <div className="history-grid">
                       <div>
                         <h3>Upcoming</h3>
@@ -1548,11 +2225,14 @@ export default function App() {
                               <article key={booking._id} className="booking-card">
                                 <div className="booking-topline">
                                   <h3>{booking.service?.name || 'Service unavailable'}</h3>
-                                  <span className={`status-pill status-${booking.status.toLowerCase()}`}>{booking.status}</span>
+                                  <span className={`status-pill status-${booking.status.toLowerCase()}`}>{formatBookingStatusLabel(booking.status)}</span>
                                 </div>
                                 <p>{formatBookingDate(booking.appointmentDate)}</p>
+                                <p><strong>Paid:</strong> {formatPrice(booking.paymentAmount || booking.service?.price || 0)}</p>
+                                <p><strong>Payment status:</strong> {formatPaymentStatusLabel(booking.paymentStatus)}</p>
                                 <p><strong>Location:</strong> {booking.locationName}</p>
                                 {booking.instructorName ? <p><strong>Instructor:</strong> {booking.instructorName}</p> : null}
+                                {booking.paymentLast4 ? <p><strong>Card:</strong> ending in {booking.paymentLast4}</p> : null}
                                 {booking.notes ? <p><strong>Notes:</strong> {booking.notes}</p> : null}
                                 {booking.status !== 'Cancelled' ? (
                                   <div className="admin-actions">
@@ -1577,9 +2257,11 @@ export default function App() {
                               <article key={booking._id} className="booking-card">
                                 <div className="booking-topline">
                                   <h3>{booking.service?.name || 'Service unavailable'}</h3>
-                                  <span className={`status-pill status-${booking.status.toLowerCase()}`}>{booking.status}</span>
+                                  <span className={`status-pill status-${booking.status.toLowerCase()}`}>{formatBookingStatusLabel(booking.status)}</span>
                                 </div>
                                 <p>{formatBookingDate(booking.appointmentDate)}</p>
+                                <p><strong>Paid:</strong> {formatPrice(booking.paymentAmount || booking.service?.price || 0)}</p>
+                                <p><strong>Attendance:</strong> {formatAttendanceStatusLabel(booking.attendanceStatus)}</p>
                                 <p><strong>Location:</strong> {booking.locationName}</p>
                                 {booking.instructorName ? <p><strong>Instructor:</strong> {booking.instructorName}</p> : null}
                                 <p>{reviewLookup.has(String(booking._id)) ? 'Review submitted' : 'Ready for review'}</p>
@@ -1589,6 +2271,53 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+                    <div className="member-stack no-show-stack">
+                      <div>
+                        <h3>No-shows & Credits</h3>
+                        <div className="booking-list">
+                          {noShowBookings.length === 0 ? (
+                            <p>No no-show bookings on your account.</p>
+                          ) : (
+                            noShowBookings.map((booking) => {
+                              const eligibleCredit =
+                                isSelfLedService(booking.service) &&
+                                booking.creditEligible &&
+                                !booking.creditRedeemedForBookingId;
+
+                              return (
+                                <article key={booking._id} className="booking-card">
+                                  <div className="booking-topline">
+                                    <h3>{booking.service?.name || 'Service unavailable'}</h3>
+                                    <span className="status-pill status-cancelled">No-show</span>
+                                  </div>
+                                  <p>{formatBookingDate(booking.appointmentDate)}</p>
+                                  <p><strong>Location:</strong> {booking.locationName}</p>
+                                  {eligibleCredit ? (
+                                    <p><strong>Credit:</strong> You can reschedule this Open Gym session without paying again.</p>
+                                  ) : (
+                                    <>
+                                      <p><strong>Status:</strong> This class was missed and removed from your active schedule.</p>
+                                      <p><strong>Demo fee:</strong> {formatPrice(booking.noShowFeeAmount || 0)}</p>
+                                    </>
+                                  )}
+                                  {booking.creditRedeemedForBookingId ? (
+                                    <p><strong>Credit status:</strong> Already used on a new booking.</p>
+                                  ) : null}
+                                  {eligibleCredit ? (
+                                    <div className="admin-actions">
+                                      <button type="button" onClick={() => startCreditReschedule(booking)}>
+                                        Reschedule with credit
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </article>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    </>
                   )}
                 </section>
               ) : null}
@@ -1607,6 +2336,10 @@ export default function App() {
                         <span>{profileForm.email || 'No email available'}</span>
                       </article>
                       <article className="booking-helper-card booking-helper-card-compact">
+                        <strong>Membership number</strong>
+                        <span>{profileForm.membershipNumber || 'Will appear after registration.'}</span>
+                      </article>
+                      <article className="booking-helper-card booking-helper-card-compact">
                         <strong>Password changes</strong>
                         <span>Use your current password to confirm any email or password update.</span>
                       </article>
@@ -1620,15 +2353,6 @@ export default function App() {
                         <label>
                           Email
                           <input name="email" type="email" value={profileForm.email} onChange={updateForm(setProfileForm)} required />
-                        </label>
-                        <label>
-                          Membership number
-                          <input
-                            name="membershipNumber"
-                            value={profileForm.membershipNumber}
-                            onChange={updateForm(setProfileForm)}
-                            required
-                          />
                         </label>
                         <label>
                           Current password
@@ -1675,6 +2399,10 @@ export default function App() {
                       <article className="summary-card">
                         <strong>{upcomingBookings.length}</strong>
                         <span>Upcoming bookings</span>
+                      </article>
+                      <article className="summary-card membership-summary-card">
+                        <strong>{profileForm.membershipNumber || 'MEM'}</strong>
+                        <span>Membership ID</span>
                       </article>
                       <article className="summary-card">
                         <strong>{pastBookings.length}</strong>
@@ -1768,7 +2496,7 @@ export default function App() {
                       <h2>A calmer way to book your wellness routine.</h2>
                     </div>
                     <p className="section-copy about-copy">
-                      Wellness Center Studio brings classes, massage, spa services, and gym access into one clean booking experience. Members can manage their time, staff can manage approvals, and reviews help the studio keep improving.
+                      Wellness Center Studio brings classes, massage, spa services, and gym access into one clean booking experience. Members can manage their time, staff can manage operations, and reviews help the studio keep improving.
                     </p>
                     <div className="about-highlights">
                       <article className="feature-card about-card">
@@ -1781,7 +2509,7 @@ export default function App() {
                       </article>
                       <article className="feature-card about-card">
                         <h3>Member Experience</h3>
-                        <p>Profiles, booking history, approvals, and reviews all live in one organized place.</p>
+                        <p>Profiles, booking history, pricing, attendance, and reviews all live in one organized place.</p>
                       </article>
                     </div>
                   </section>
@@ -1794,6 +2522,7 @@ export default function App() {
                     <div className="editorial-strip member-editorial-strip">
                       {services.slice(0, 3).map((service) => {
                         const presentation = getServicePresentation(service);
+                        const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
                         return (
                           <article key={service._id} className="editorial-card">
                             <div className="editorial-visual">
@@ -1802,6 +2531,10 @@ export default function App() {
                             <div className="editorial-copy">
                               <p>{presentation.eyebrow}</p>
                               <h3>{service.name}</h3>
+                              <div className="service-rating service-rating-compact">
+                                <strong>{ratingSummary.stars}</strong>
+                                <span>{ratingSummary.label}</span>
+                              </div>
                             </div>
                           </article>
                         );
@@ -1813,72 +2546,245 @@ export default function App() {
             </>
           )}
 
-          <section className="panel bookings-panel">
-            <div className="bookings-header">
-              <div>
-                <p className="panel-kicker">{isAdmin ? 'Timeline' : 'Social Proof'}</p>
-                <h2>{isAdmin ? 'All Booking Requests' : 'Recent Reviews'}</h2>
-                <p className="section-copy">
-                  {isAdmin ? 'Approve or reject requests below.' : 'Member feedback helps show what the wellness center is doing well.'}
-                </p>
+          {!isAdmin || adminPage === 'schedule' ? (
+            <section className="panel bookings-panel">
+              <div className="bookings-header">
+                <div>
+                  <p className="panel-kicker">{isAdmin ? 'Studio Calendar' : 'Social Proof'}</p>
+                  <h2>{isAdmin ? 'Upcoming Class Schedule' : 'Recent Reviews'}</h2>
+                  <p className="section-copy">
+                    {isAdmin
+                      ? 'See who is booked into each session, how many spots are left, and mark attendance once the class time has passed.'
+                      : 'Member feedback helps show what the wellness center is doing well.'}
+                  </p>
+                </div>
+                {isAdmin ? (
+                  <button type="button" className="secondary-button" onClick={loadBookings}>
+                    Refresh
+                  </button>
+                ) : null}
               </div>
-              {isAdmin ? (
-                <button type="button" className="secondary-button" onClick={loadBookings}>
-                  Refresh
-                </button>
-              ) : null}
-            </div>
 
-            {isAdmin ? (
-              <>
-                {loadingBookings ? (
-                  <p>Loading bookings...</p>
-                ) : bookings.length === 0 ? (
-                  <p>No bookings found yet.</p>
-                ) : (
-                  <div className="booking-list">
-                    {bookings.map((booking) => (
-                      <article key={booking._id} className="booking-card">
-                        <div className="booking-topline">
-                          <h3>{booking.service?.name || 'Service unavailable'}</h3>
-                          <span className={`status-pill status-${booking.status.toLowerCase()}`}>{booking.status}</span>
+              {isAdmin ? (
+                <>
+                  {loadingBookings ? (
+                    <p>Loading bookings...</p>
+                  ) : (
+                    <div className="member-stack schedule-stack">
+                      <div className="admin-calendar-panel">
+                        <div className="admin-calendar-header">
+                          <div>
+                            <p className="panel-kicker">Monthly View</p>
+                            <h2>{formatMonthLabel(calendarMonthDate)}</h2>
+                          </div>
+                          <div className="admin-calendar-nav">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() =>
+                                setCalendarMonthDate(
+                                  (current) => new Date(current.getFullYear(), current.getMonth() - 1, 1)
+                                )
+                              }
+                            >
+                              Previous
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() =>
+                                setCalendarMonthDate(
+                                  (current) => new Date(current.getFullYear(), current.getMonth() + 1, 1)
+                                )
+                              }
+                            >
+                              Next
+                            </button>
+                          </div>
                         </div>
-                        <p>{formatBookingDate(booking.appointmentDate)}</p>
-                        <p><strong>Location:</strong> {booking.locationName}</p>
-                        {booking.instructorName ? <p><strong>Instructor:</strong> {booking.instructorName}</p> : null}
-                        <p><strong>Member:</strong> {booking.clientName}</p>
-                        <p><strong>Email:</strong> {booking.email}</p>
-                        {booking.notes ? <p><strong>Notes:</strong> {booking.notes}</p> : null}
-                        <div className="admin-actions">
-                          <button type="button" onClick={() => handleStatusChange(booking._id, 'Approved')}>Approve</button>
-                          <button type="button" className="danger-button" onClick={() => handleStatusChange(booking._id, 'Rejected')}>
-                            Reject
-                          </button>
+                        <div className="admin-calendar-grid">
+                          {calendarWeekdays.map((weekday) => (
+                            <div key={weekday} className="admin-calendar-weekday">
+                              {weekday}
+                            </div>
+                          ))}
+                          {calendarCells.map((day) => (
+                            <article
+                              key={day.key}
+                              className={`admin-calendar-day${day.isCurrentMonth ? '' : ' muted'}${day.isToday ? ' today' : ''}`}
+                            >
+                              <div className="admin-calendar-day-label">{day.label}</div>
+                              <div className="admin-calendar-events">
+                                {day.sessions.length === 0 ? (
+                                  <span className="admin-calendar-empty">No classes</span>
+                                ) : (
+                                  day.sessions.map((session) => (
+                                    <div key={session.key} className="admin-calendar-event">
+                                      <strong>{session.serviceName}</strong>
+                                      <span>{new Date(session.appointmentDate).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+                                      <span>{session.locationName}</span>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </article>
+                          ))}
                         </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="service-list">
-                {reviews.length === 0 ? (
-                  <p>No reviews yet.</p>
-                ) : (
-                  reviews.map((review) => (
-                    <article key={review._id} className="service-card">
-                      <div className="service-card-header">
-                        <h3>{review.service?.name || 'Service review'}</h3>
-                        <span>{review.rating}/5</span>
                       </div>
-                      <p>{review.comment || 'No written comment provided.'}</p>
-                      <p><strong>{review.userName}</strong></p>
-                    </article>
-                  ))
-                )}
-              </div>
-            )}
-          </section>
+
+                      <div>
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Upcoming</p>
+                          <h2>Future Classes</h2>
+                        </div>
+                        {adminUpcomingSessions.length === 0 ? (
+                          <p>No upcoming sessions are booked yet.</p>
+                        ) : (
+                          <div className="schedule-session-grid">
+                            {adminUpcomingSessions.map((session) => (
+                              <article key={session.key} className="schedule-session-card">
+                                <div className="schedule-session-topline">
+                                  <div>
+                                    <p className="panel-kicker">{session.category || 'Session'}</p>
+                                    <h3>{session.serviceName}</h3>
+                                  </div>
+                                  <span className="status-pill status-approved">{session.spotsLeft} spots left</span>
+                                </div>
+                                <div className="schedule-session-meta">
+                                  <span>{formatBookingDate(session.appointmentDate)}</span>
+                                  <span>{session.locationName}</span>
+                                  <span>{formatPrice(session.price)}</span>
+                                </div>
+                                <p className="schedule-session-address">{session.locationAddress}</p>
+                                {session.instructorName ? <p className="schedule-session-address"><strong>Instructor:</strong> {session.instructorName}</p> : null}
+                                <div className="schedule-member-list">
+                                  {session.bookings.map((booking) => (
+                                    <article key={booking._id} className="schedule-member-card">
+                                      <div>
+                                        <strong>{booking.clientName}</strong>
+                                        <span>{booking.email}</span>
+                                        <span>{formatPaymentStatusLabel(booking.paymentStatus)}</span>
+                                        {booking.paymentLast4 ? <span>Card ending in {booking.paymentLast4}</span> : null}
+                                      </div>
+                                      <div className="schedule-member-actions">
+                                        {booking.status !== 'Cancelled' ? (
+                                          <button
+                                            type="button"
+                                            className="danger-button"
+                                            onClick={() => handleCancelBooking(booking._id)}
+                                          >
+                                            Cancel booking
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    </article>
+                                  ))}
+                                </div>
+                                <div className="schedule-capacity-row">
+                                  <strong>{session.bookings.length} booked</strong>
+                                  <span>{session.capacity} total spots</span>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Completed</p>
+                          <h2>Past Classes</h2>
+                        </div>
+                        <p className="section-copy">
+                          Once a class time has passed, use these member rows to confirm attended or mark a no-show.
+                        </p>
+                        {adminCompletedSessions.length === 0 ? (
+                          <p>No past sessions yet.</p>
+                        ) : (
+                          <div className="schedule-session-grid">
+                            {adminCompletedSessions.map((session) => (
+                              <article key={session.key} className="schedule-session-card">
+                                <div className="schedule-session-topline">
+                                  <div>
+                                    <p className="panel-kicker">{session.category || 'Session'}</p>
+                                    <h3>{session.serviceName}</h3>
+                                  </div>
+                                  <span className="status-pill">{session.bookings.length} bookings</span>
+                                </div>
+                                <div className="schedule-session-meta">
+                                  <span>{formatBookingDate(session.appointmentDate)}</span>
+                                  <span>{session.locationName}</span>
+                                  <span>{formatPrice(session.price)}</span>
+                                </div>
+                                <p className="schedule-session-address">{session.locationAddress}</p>
+                                {session.instructorName ? <p className="schedule-session-address"><strong>Instructor:</strong> {session.instructorName}</p> : null}
+                                <div className="schedule-member-list">
+                                  {session.bookings.map((booking) => (
+                                    <article key={booking._id} className="schedule-member-card">
+                                      <div>
+                                        <strong>{booking.clientName}</strong>
+                                        <span>{booking.email}</span>
+                                        <span>{formatAttendanceStatusLabel(booking.attendanceStatus)}</span>
+                                        <span>{formatPaymentStatusLabel(booking.paymentStatus)}</span>
+                                        {booking.paymentLast4 ? <span>Card ending in {booking.paymentLast4}</span> : null}
+                                        {booking.noShowFeeAmount ? <span>No-show fee: {formatPrice(booking.noShowFeeAmount)}</span> : null}
+                                        {booking.creditEligible ? <span>Open Gym credit available</span> : null}
+                                      </div>
+                                      <div className="schedule-member-actions">
+                                        {booking.attendanceStatus === 'Scheduled' ? (
+                                          <>
+                                            <button
+                                              type="button"
+                                              className="secondary-button"
+                                              onClick={() => handleAttendanceUpdate(booking._id, 'Attended')}
+                                            >
+                                              Confirm attended
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="danger-button"
+                                              onClick={() => handleAttendanceUpdate(booking._id, 'No-show')}
+                                            >
+                                              Mark no-show
+                                            </button>
+                                          </>
+                                        ) : null}
+                                      </div>
+                                    </article>
+                                  ))}
+                                </div>
+                                <div className="schedule-capacity-row">
+                                  <strong>{session.bookings.length} booked</strong>
+                                  <span>{session.capacity} total spots</span>
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="service-list">
+                  {reviews.length === 0 ? (
+                    <p>No reviews yet.</p>
+                  ) : (
+                    reviews.map((review) => (
+                      <article key={review._id} className="service-card">
+                        <div className="service-card-header">
+                          <h3>{review.service?.name || 'Service review'}</h3>
+                          <span>{review.rating}/5</span>
+                        </div>
+                        <p>{review.comment || 'No written comment provided.'}</p>
+                        <p><strong>{review.userName}</strong></p>
+                      </article>
+                    ))
+                  )}
+                </div>
+              )}
+            </section>
+          ) : null}
         </main>
       )}
     </div>

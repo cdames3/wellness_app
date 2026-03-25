@@ -106,6 +106,12 @@ const serviceSchema = new mongoose.Schema(
       min: 1,
       default: 1,
     },
+    price: {
+      type: Number,
+      required: true,
+      min: 0,
+      default: 0,
+    },
     bookingMode: {
       type: String,
       enum: ['self-led', 'instructor-led'],

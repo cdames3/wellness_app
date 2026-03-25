@@ -55,12 +55,64 @@ const bookingSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ['Pending', 'Approved', 'Rejected', 'Cancelled'],
-      default: 'Pending',
+      default: 'Approved',
+    },
+    attendanceStatus: {
+      type: String,
+      enum: ['Scheduled', 'Attended', 'No-show'],
+      default: 'Scheduled',
     },
     notes: {
       type: String,
       trim: true,
       default: '',
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['Paid', 'Unpaid', 'Credit Applied'],
+      default: 'Unpaid',
+    },
+    paymentAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    paymentCardholderName: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    paymentLast4: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    paidAt: {
+      type: Date,
+      default: null,
+    },
+    noShowFeeAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    creditEligible: {
+      type: Boolean,
+      default: false,
+    },
+    creditSourceBookingId: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    creditRedeemedForBookingId: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    attendanceMarkedAt: {
+      type: Date,
+      default: null,
     },
   },
   {
