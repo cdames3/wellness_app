@@ -18,11 +18,22 @@ const emptyLoginForm = {
   password: '',
 };
 
+const emptyForgotPasswordForm = {
+  email: '',
+};
+
+const emptyResetPasswordForm = {
+  token: '',
+  password: '',
+  confirmPassword: '',
+};
+
 const emptyBookingForm = {
   serviceId: '',
   bookingDate: '',
   slotTime: '',
   locationId: '',
+  preferredInstructorId: '',
   instructorName: '',
   notes: '',
   paymentCardholderName: '',
@@ -63,6 +74,35 @@ const emptyOverrideForm = {
   instructorName: '',
 };
 
+function createEmptyInstructorForm(defaultLocationId = '') {
+  return {
+    id: '',
+    name: '',
+    title: '',
+    email: '',
+    phone: '',
+    bio: '',
+    active: true,
+    serviceIds: [],
+    locationIds: defaultLocationId ? [defaultLocationId] : [],
+    weeklyAvailability: [
+      {
+        dayOfWeek: 1,
+        locationId: defaultLocationId,
+        startTime: '06:00',
+        endTime: '14:00',
+      },
+    ],
+  };
+}
+
+const emptyInstructorAvailabilityExplorer = {
+  instructorId: '',
+  serviceId: '',
+  locationId: '',
+  date: '',
+};
+
 const servicePresentation = {
   'Pilates Flow': {
     eyebrow: 'Strength & Flow',
@@ -85,6 +125,16 @@ const servicePresentation = {
     image: gymImage,
   },
 };
+
+const weekdayOptions = [
+  { value: 0, label: 'Sunday' },
+  { value: 1, label: 'Monday' },
+  { value: 2, label: 'Tuesday' },
+  { value: 3, label: 'Wednesday' },
+  { value: 4, label: 'Thursday' },
+  { value: 5, label: 'Friday' },
+  { value: 6, label: 'Saturday' },
+];
 
 function formatBookingDate(value) {
   const date = new Date(value);
@@ -241,8 +291,27 @@ function createCalendarCells(monthDate, sessions) {
   return cells;
 }
 
+function addDays(baseDate, amount) {
+  const nextDate = new Date(baseDate);
+  nextDate.setDate(nextDate.getDate() + amount);
+  return nextDate;
+}
+
 function padTime(value) {
   return String(value).padStart(2, '0');
+}
+
+function getCookieValue(name) {
+  const cookieMatch = document.cookie
+    .split(';')
+    .map((segment) => segment.trim())
+    .find((segment) => segment.startsWith(`${name}=`));
+
+  if (!cookieMatch) {
+    return '';
+  }
+
+  return decodeURIComponent(cookieMatch.slice(name.length + 1));
 }
 
 function formatTimeLabel(timeValue) {
@@ -252,14 +321,38 @@ function formatTimeLabel(timeValue) {
   return `${normalizedHour}:${padTime(minuteValue)} ${period}`;
 }
 
-function generateServiceSlots(service, bookingDate, locationId) {
-  if (!service?.schedule || !bookingDate) {
+function timeValueToMinutes(value) {
+  const [hourValue, minuteValue] = String(value || '').split(':').map(Number);
+  if (!Number.isFinite(hourValue) || !Number.isFinite(minuteValue)) {
+    return Number.NaN;
+  }
+
+  return (hourValue * 60) + minuteValue;
+}
+
+function formatHourLabel(hourValue) {
+  if (Number(hourValue) === 24) {
+    return '12:00 AM';
+  }
+
+  return formatTimeLabel(`${padTime(Number(hourValue) % 24)}:00`);
+}
+
+function buildLocationTimeValues(service, selectedLocation) {
+  if (!service || !selectedLocation) {
     return [];
   }
 
-  const locations = Array.isArray(service.locations) ? service.locations : [];
-  const selectedLocation = locations.find((location) => location.id === locationId) || locations[0];
-  const instructors = Array.isArray(selectedLocation?.instructors) ? selectedLocation.instructors : [];
+  const locationSpecificTimes = Array.isArray(selectedLocation.timeSlots)
+    ? selectedLocation.timeSlots
+        .map((value) => String(value || '').trim())
+        .filter((value) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(value))
+    : [];
+
+  if (service.bookingMode !== 'self-led' && locationSpecificTimes.length > 0) {
+    return locationSpecificTimes;
+  }
+
   const slotCount = Math.max(
     0,
     ((Number(service.schedule.endHour) - Number(service.schedule.startHour)) * 60) /
@@ -270,32 +363,122 @@ function generateServiceSlots(service, bookingDate, locationId) {
     const totalMinutes = Number(service.schedule.startHour) * 60 + index * Number(service.schedule.intervalMinutes || 60);
     const hours = Math.floor(totalMinutes / 60);
     const minutes = totalMinutes % 60;
-    const time = `${padTime(hours)}:${padTime(minutes)}`;
+    return `${padTime(hours)}:${padTime(minutes)}`;
+  });
+}
+
+function getOrderedAvailableInstructorNames(selectedLocation, assignedInstructorRecords, bookingDate, time) {
+  const availableInstructorNames = assignedInstructorRecords
+    .filter((instructor) => isInstructorAvailableForSlot(instructor, bookingDate, selectedLocation?.id, time))
+    .map((instructor) => instructor.name);
+
+  const locationInstructorOrder = Array.isArray(selectedLocation?.instructors)
+    ? selectedLocation.instructors.map((name) => String(name))
+    : [];
+
+  const orderedByLocation = locationInstructorOrder.filter((name) => availableInstructorNames.includes(name));
+  const remainingNames = availableInstructorNames.filter((name) => !orderedByLocation.includes(name));
+  return [...orderedByLocation, ...remainingNames];
+}
+
+function isInstructorAvailableForSlot(instructor, bookingDate, locationId, time) {
+  const slotDate = new Date(`${bookingDate}T00:00:00`);
+  if (Number.isNaN(slotDate.getTime())) {
+    return false;
+  }
+
+  const dayOfWeek = slotDate.getDay();
+  const slotMinutes = timeValueToMinutes(time);
+
+  return (instructor.weeklyAvailability || []).some((block) => {
+    if (Number(block.dayOfWeek) !== dayOfWeek || String(block.locationId) !== String(locationId)) {
+      return false;
+    }
+
+    const startMinutes = timeValueToMinutes(block.startTime);
+    const endMinutes = timeValueToMinutes(block.endTime);
+    return slotMinutes >= startMinutes && slotMinutes < endMinutes;
+  });
+}
+
+function getAssignedInstructorsForServiceLocation(service, locationId, instructorDirectory = []) {
+  const serviceId = String(service?._id || '');
+  if (!serviceId || !locationId) {
+    return [];
+  }
+
+  return instructorDirectory.filter(
+    (instructor) =>
+      instructor.active !== false &&
+      (instructor.serviceIds || []).map(String).includes(serviceId) &&
+      (instructor.locationIds || []).map(String).includes(String(locationId))
+  );
+}
+
+function generateServiceSlots(service, bookingDate, locationId, instructorDirectory = []) {
+  if (!service?.schedule || !bookingDate) {
+    return [];
+  }
+
+  const locations = Array.isArray(service.locations) ? service.locations : [];
+  const selectedLocation = locations.find((location) => location.id === locationId) || locations[0];
+  const assignedInstructorRecords = getAssignedInstructorsForServiceLocation(
+    service,
+    selectedLocation?.id,
+    instructorDirectory
+  );
+  const timeValues = buildLocationTimeValues(service, selectedLocation);
+
+  return timeValues.map((time, index) => {
     const matchingOverride = (service.scheduleOverrides || []).find(
       (override) =>
         override.date === bookingDate &&
         override.time === time &&
         override.locationId === selectedLocation?.id
     );
+    const availableInstructorOptions =
+      service.bookingMode === 'self-led'
+        ? []
+        : assignedInstructorRecords.length > 0
+          ? getOrderedAvailableInstructorNames(selectedLocation, assignedInstructorRecords, bookingDate, time)
+          : Array.isArray(selectedLocation?.instructors)
+            ? selectedLocation.instructors
+            : [];
+    const defaultInstructor =
+      service.bookingMode === 'self-led'
+        ? ''
+        : matchingOverride?.instructorName || availableInstructorOptions[index % Math.max(availableInstructorOptions.length, 1)] || '';
+    const instructorOptions =
+      service.bookingMode === 'self-led'
+        ? []
+        : defaultInstructor
+          ? [defaultInstructor]
+          : [];
 
     return {
       time,
       label: formatTimeLabel(time),
-      defaultInstructor:
-        service.bookingMode === 'self-led'
-          ? ''
-          : matchingOverride?.instructorName || instructors[index % Math.max(instructors.length, 1)] || '',
-      instructorOptions: instructors,
+      defaultInstructor,
+      instructorName: defaultInstructor,
+      instructorOptions,
+      availableInstructorOptions,
     };
-  }).filter((slot) => isUpcomingAppointment(buildAppointmentDate(bookingDate, slot.time)));
+  }).filter(
+    (slot) =>
+      isUpcomingAppointment(buildAppointmentDate(bookingDate, slot.time)) &&
+      (service.bookingMode === 'self-led' || slot.instructorOptions.length > 0)
+  );
 }
 
 async function apiRequest(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const csrfToken = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? '' : getCookieValue('wellness_csrf');
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
       ...(options.headers || {}),
     },
   });
@@ -319,29 +502,40 @@ export default function App() {
   const [adminPage, setAdminPage] = useState('services');
   const [services, setServices] = useState([]);
   const [adminServices, setAdminServices] = useState([]);
+  const [instructors, setInstructors] = useState([]);
+  const [adminInstructors, setAdminInstructors] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
   const [loginForm, setLoginForm] = useState(emptyLoginForm);
+  const [forgotPasswordForm, setForgotPasswordForm] = useState(emptyForgotPasswordForm);
+  const [resetPasswordForm, setResetPasswordForm] = useState(emptyResetPasswordForm);
   const [bookingForm, setBookingForm] = useState(emptyBookingForm);
   const [profileForm, setProfileForm] = useState(emptyProfileForm);
   const [serviceForm, setServiceForm] = useState(emptyServiceForm);
+  const [instructorForm, setInstructorForm] = useState(() => createEmptyInstructorForm());
   const [reviewForm, setReviewForm] = useState(emptyReviewForm);
   const [overrideForm, setOverrideForm] = useState(emptyOverrideForm);
+  const [availabilityExplorer, setAvailabilityExplorer] = useState(emptyInstructorAvailabilityExplorer);
   const [loadingServices, setLoadingServices] = useState(true);
   const [loadingBookings, setLoadingBookings] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [serviceLoading, setServiceLoading] = useState(false);
+  const [instructorLoading, setInstructorLoading] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [overrideLoading, setOverrideLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [verificationToken, setVerificationToken] = useState('');
+  const [authTransition, setAuthTransition] = useState(null);
   const [recentBooking, setRecentBooking] = useState(null);
   const [creditBookingId, setCreditBookingId] = useState('');
   const [editingServiceId, setEditingServiceId] = useState('');
   const [editingServiceForm, setEditingServiceForm] = useState(emptyServiceForm);
+  const [editingInstructorId, setEditingInstructorId] = useState('');
+  const [selectedAdminLocationId, setSelectedAdminLocationId] = useState('');
   const [calendarMonthDate, setCalendarMonthDate] = useState(() => {
     const today = new Date();
     return new Date(today.getFullYear(), today.getMonth(), 1);
@@ -350,12 +544,14 @@ export default function App() {
   useEffect(() => {
     async function loadPublicData() {
       try {
-        const [serviceData, reviewData] = await Promise.all([
+        const [serviceData, reviewData, instructorData] = await Promise.all([
           apiRequest('/services'),
           apiRequest('/reviews'),
+          apiRequest('/instructors'),
         ]);
         setServices(serviceData);
         setReviews(reviewData);
+        setInstructors(instructorData);
       } catch (loadError) {
         setError(loadError.message);
       } finally {
@@ -396,6 +592,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (authChecking) {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get('mode');
+    const token = params.get('token') || '';
+
+    if (mode === 'reset-password' && token) {
+      setResetPasswordForm((current) => ({
+        ...current,
+        token,
+      }));
+      setView('reset-password');
+      return;
+    }
+
+    if (mode === 'verify-email' && token) {
+      setVerificationToken(token);
+      setView('verify-email');
+    }
+  }, [authChecking]);
+
+  useEffect(() => {
     if (user) {
       loadBookings();
     }
@@ -404,6 +624,7 @@ export default function App() {
   useEffect(() => {
     if (user?.role === 'admin') {
       loadAdminServices();
+      loadAdminInstructors();
     }
   }, [user?._id, user?.role]);
 
@@ -449,6 +670,48 @@ export default function App() {
   }, [adminServices]);
 
   useEffect(() => {
+    if (adminServices.length === 0) {
+      return;
+    }
+
+    const defaultLocationId =
+      adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id || '';
+
+    setInstructorForm((current) => {
+      const hasRealLocation = current.locationIds.length > 0 || current.weeklyAvailability.some((block) => block.locationId);
+      if (hasRealLocation) {
+        return current;
+      }
+
+      return createEmptyInstructorForm(defaultLocationId);
+    });
+  }, [adminServices]);
+
+  useEffect(() => {
+    if (adminInstructors.length === 0 || adminServices.length === 0) {
+      return;
+    }
+
+    setAvailabilityExplorer((current) => {
+      const nextInstructor = adminInstructors.find((instructor) => instructor._id === current.instructorId) || adminInstructors[0];
+      const nextService =
+        adminServices.find((service) =>
+          (nextInstructor.serviceIds || []).map(String).includes(String(service._id))
+        ) || adminServices[0];
+      const nextLocation =
+        (nextService?.locations || []).find((location) => (nextInstructor.locationIds || []).includes(location.id)) ||
+        nextService?.locations?.[0];
+
+      return {
+        instructorId: nextInstructor?._id || '',
+        serviceId: current.serviceId || nextService?._id || '',
+        locationId: current.locationId || nextLocation?.id || '',
+        date: current.date,
+      };
+    });
+  }, [adminInstructors, adminServices]);
+
+  useEffect(() => {
     if (user?.role === 'user') {
       setMemberPage('book');
     }
@@ -473,13 +736,34 @@ export default function App() {
     return () => window.clearTimeout(timeoutId);
   }, [message, error]);
 
+  useEffect(() => {
+    if (!authTransition) {
+      return undefined;
+    }
+
+    const fadeTimeoutId = window.setTimeout(() => {
+      setAuthTransition((current) => (current ? { ...current, phase: 'fade' } : null));
+    }, 1700);
+
+    const clearTimeoutId = window.setTimeout(() => {
+      setAuthTransition(null);
+    }, 2450);
+
+    return () => {
+      window.clearTimeout(fadeTimeoutId);
+      window.clearTimeout(clearTimeoutId);
+    };
+  }, [authTransition?.title, authTransition?.text]);
+
   async function refreshPublicData() {
-    const [serviceData, reviewData] = await Promise.all([
+    const [serviceData, reviewData, instructorData] = await Promise.all([
       apiRequest('/services'),
       apiRequest('/reviews'),
+      apiRequest('/instructors'),
     ]);
     setServices(serviceData);
     setReviews(reviewData);
+    setInstructors(instructorData);
   }
 
   async function loadBookings() {
@@ -515,6 +799,21 @@ export default function App() {
     }
   }
 
+  async function loadAdminInstructors() {
+    if (user?.role !== 'admin') {
+      return;
+    }
+
+    try {
+      const data = await apiRequest('/admin/instructors');
+      setAdminInstructors(data);
+    } catch (loadError) {
+      if (!handleSessionError(loadError)) {
+        setError(loadError.message);
+      }
+    }
+  }
+
   function clearSessionState() {
     setUser(null);
     setAuthChecking(false);
@@ -526,6 +825,28 @@ export default function App() {
     setCreditBookingId('');
     setEditingServiceId('');
     setEditingServiceForm(emptyServiceForm);
+    setForgotPasswordForm(emptyForgotPasswordForm);
+    setResetPasswordForm(emptyResetPasswordForm);
+    setVerificationToken('');
+    setAuthTransition(null);
+    setAdminInstructors([]);
+    setEditingInstructorId('');
+    setInstructorForm(createEmptyInstructorForm());
+    setAvailabilityExplorer(emptyInstructorAvailabilityExplorer);
+  }
+
+  function clearAuthQueryParams() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('mode');
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+  }
+
+  function startAuthTransition(config) {
+    setAuthTransition({
+      ...config,
+      phase: 'active',
+    });
   }
 
   function handleSessionError(requestError) {
@@ -553,7 +874,17 @@ export default function App() {
   function updateForm(setter) {
     return (event) => {
       const { name, value } = event.target;
-      setter((current) => ({ ...current, [name]: value }));
+      let nextValue = value;
+
+      if (name === 'email') {
+        nextValue = String(value || '').toLowerCase();
+      }
+
+      if (name === 'identifier' && String(value || '').includes('@')) {
+        nextValue = String(value || '').toLowerCase();
+      }
+
+      setter((current) => ({ ...current, [name]: nextValue }));
     };
   }
 
@@ -572,7 +903,10 @@ export default function App() {
       setUser(data.user);
       setRegisterForm(emptyRegisterForm);
       setView('app');
-      setMessage(`Your account is ready. Your membership number is ${data.user.membershipNumber}.`);
+      startAuthTransition({
+        title: 'Account created',
+        text: data.message || `Your membership number is ${data.user.membershipNumber}.`,
+      });
     } catch (registerError) {
       setError(registerError.message);
     } finally {
@@ -595,15 +929,123 @@ export default function App() {
       setUser(data.user);
       setLoginForm(emptyLoginForm);
       setView('app');
-      setMessage(
-        data.user.role === 'admin'
-          ? 'Admin signed in. Studio operations are ready.'
-          : 'Welcome back. Your booking dashboard is ready.'
-      );
+      startAuthTransition({
+        title: data.user.role === 'admin' ? 'Admin signed in' : 'Welcome back',
+        text:
+          data.message ||
+          (data.user.role === 'admin'
+            ? 'Studio operations are ready.'
+            : 'Your booking dashboard is ready.'),
+      });
     } catch (loginError) {
       setError(loginError.message);
     } finally {
       setAuthLoading(false);
+    }
+  }
+
+  async function handleForgotPassword(event) {
+    event.preventDefault();
+    setAuthLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const data = await apiRequest('/auth/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify(forgotPasswordForm),
+      });
+
+      setForgotPasswordForm(emptyForgotPasswordForm);
+      setView('login');
+      setMessage(data.message || 'Password reset instructions have been sent if the account exists.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleResetPassword(event) {
+    event.preventDefault();
+    setAuthLoading(true);
+    setMessage('');
+    setError('');
+
+    if (resetPasswordForm.password !== resetPasswordForm.confirmPassword) {
+      setAuthLoading(false);
+      setError('Your new password and confirmation password do not match.');
+      return;
+    }
+
+    try {
+      const data = await apiRequest('/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({
+          token: resetPasswordForm.token,
+          password: resetPasswordForm.password,
+        }),
+      });
+
+      clearAuthQueryParams();
+      setResetPasswordForm(emptyResetPasswordForm);
+      setView('login');
+      setMessage(data.message || 'Your password has been reset.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleVerifyEmail() {
+    if (!verificationToken) {
+      setError('That verification link is missing a token.');
+      return;
+    }
+
+    setAuthLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const data = await apiRequest('/auth/verify-email', {
+        method: 'POST',
+        body: JSON.stringify({ token: verificationToken }),
+      });
+
+      clearAuthQueryParams();
+      setVerificationToken('');
+      if (data.user && user && data.user._id === user._id) {
+        setUser(data.user);
+        setView('app');
+      } else {
+        setView(user ? 'app' : 'login');
+      }
+      setMessage(data.message || 'Your email has been verified.');
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleRequestVerification() {
+    setProfileLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const data = await apiRequest('/auth/request-verification', {
+        method: 'POST',
+      });
+      setMessage(data.message || 'Verification email sent.');
+    } catch (requestError) {
+      if (!handleSessionError(requestError)) {
+        setError(requestError.message);
+      }
+    } finally {
+      setProfileLoading(false);
     }
   }
 
@@ -614,6 +1056,13 @@ export default function App() {
     setError('');
 
     try {
+      const paymentCardDigits = bookingForm.paymentCardNumber.replace(/\D/g, '');
+      const paymentCardLast4 = paymentCardDigits.slice(-4);
+
+      if (!isUsingCreditForBooking && paymentCardDigits.length !== 16) {
+        throw new Error('Please enter any 16-digit demo card number.');
+      }
+
       const createdBooking = await apiRequest(
         '/bookings',
         {
@@ -626,7 +1075,8 @@ export default function App() {
             instructorName: bookingForm.instructorName,
             notes: bookingForm.notes,
             paymentCardholderName: bookingForm.paymentCardholderName,
-            paymentCardNumber: bookingForm.paymentCardNumber,
+            paymentCardLast4,
+            paymentCardDigitsCount: paymentCardDigits.length,
             creditBookingId,
           }),
         }
@@ -691,7 +1141,11 @@ export default function App() {
         newPassword: '',
         confirmPassword: '',
       }));
-      setMessage('Profile updated successfully.');
+      setMessage(
+        data.user.emailVerified
+          ? 'Profile updated successfully.'
+          : 'Profile updated. Please verify your email address.'
+      );
     } catch (profileError) {
       if (!handleSessionError(profileError)) {
         setError(profileError.message);
@@ -750,6 +1204,7 @@ export default function App() {
 
       setServiceForm(emptyServiceForm);
       await loadAdminServices();
+      await loadAdminInstructors();
       await refreshPublicData();
     } catch (serviceError) {
       if (!handleSessionError(serviceError)) {
@@ -757,6 +1212,143 @@ export default function App() {
       }
     } finally {
       setServiceLoading(false);
+    }
+  }
+
+  function toggleInstructorArrayField(fieldName, value) {
+    setInstructorForm((current) => {
+      const currentValues = Array.isArray(current[fieldName]) ? current[fieldName] : [];
+      const exists = currentValues.includes(value);
+      const nextValues = exists
+        ? currentValues.filter((item) => item !== value)
+        : [...currentValues, value];
+
+      return {
+        ...current,
+        [fieldName]: nextValues,
+        weeklyAvailability:
+          fieldName === 'locationIds'
+            ? current.weeklyAvailability.map((block) => ({
+                ...block,
+                locationId: nextValues.includes(block.locationId)
+                  ? block.locationId
+                  : nextValues[0] || '',
+              }))
+            : current.weeklyAvailability,
+      };
+    });
+  }
+
+  function updateInstructorAvailabilityRow(index, field, value) {
+    setInstructorForm((current) => ({
+      ...current,
+      weeklyAvailability: current.weeklyAvailability.map((block, blockIndex) =>
+        blockIndex === index ? { ...block, [field]: value } : block
+      ),
+    }));
+  }
+
+  function addInstructorAvailabilityRow() {
+    setInstructorForm((current) => ({
+      ...current,
+      weeklyAvailability: [
+        ...current.weeklyAvailability,
+        {
+          dayOfWeek: 1,
+          locationId: current.locationIds[0] || '',
+          startTime: '06:00',
+          endTime: '14:00',
+        },
+      ],
+    }));
+  }
+
+  function removeInstructorAvailabilityRow(index) {
+    setInstructorForm((current) => ({
+      ...current,
+      weeklyAvailability:
+        current.weeklyAvailability.length === 1
+          ? current.weeklyAvailability
+          : current.weeklyAvailability.filter((_, blockIndex) => blockIndex !== index),
+    }));
+  }
+
+  function startEditingInstructor(instructor) {
+    if (editingInstructorId === instructor._id) {
+      setEditingInstructorId('');
+      setInstructorForm(createEmptyInstructorForm(adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id || ''));
+      return;
+    }
+
+    setEditingInstructorId(instructor._id);
+    setInstructorForm({
+      id: instructor._id,
+      name: instructor.name || '',
+      title: instructor.title || '',
+      email: instructor.email || '',
+      phone: instructor.phone || '',
+      bio: instructor.bio || '',
+      active: instructor.active !== false,
+      serviceIds: (instructor.serviceIds || []).map(String),
+      locationIds: (instructor.locationIds || []).map(String),
+      weeklyAvailability:
+        (instructor.weeklyAvailability || []).length > 0
+          ? (instructor.weeklyAvailability || []).map((block) => ({
+              dayOfWeek: Number(block.dayOfWeek),
+              locationId: block.locationId || '',
+              startTime: block.startTime || '06:00',
+              endTime: block.endTime || '14:00',
+            }))
+          : [
+              {
+                dayOfWeek: 1,
+                locationId: (instructor.locationIds || [])[0] || '',
+                startTime: '06:00',
+                endTime: '14:00',
+              },
+            ],
+    });
+  }
+
+  async function handleInstructorSubmit(event) {
+    event.preventDefault();
+    setInstructorLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const payload = {
+        name: instructorForm.name,
+        title: instructorForm.title,
+        email: instructorForm.email,
+        phone: instructorForm.phone,
+        bio: instructorForm.bio,
+        active: instructorForm.active,
+        serviceIds: instructorForm.serviceIds,
+        locationIds: instructorForm.locationIds,
+        weeklyAvailability: instructorForm.weeklyAvailability,
+      };
+
+      await apiRequest(
+        editingInstructorId ? `/admin/instructors/${editingInstructorId}` : '/admin/instructors',
+        {
+          method: editingInstructorId ? 'PATCH' : 'POST',
+          body: JSON.stringify(payload),
+        }
+      );
+
+      setEditingInstructorId('');
+      setInstructorForm(createEmptyInstructorForm(adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id || ''));
+      await loadAdminInstructors();
+      await loadAdminServices();
+      await refreshPublicData();
+      setMessage(editingInstructorId ? 'Instructor updated.' : 'Instructor added to the team.');
+    } catch (instructorError) {
+      if (!handleSessionError(instructorError)) {
+        setError(instructorError.message);
+      }
+    } finally {
+      setInstructorLoading(false);
     }
   }
 
@@ -870,6 +1462,38 @@ export default function App() {
     });
   }
 
+  async function handleDeleteService(serviceId) {
+    setMessage('');
+    setError('');
+
+    if (!window.confirm('Delete this service permanently? If it has booking history, the app will block deletion and ask you to deactivate it instead.')) {
+      return;
+    }
+
+    try {
+      await apiRequest(
+        `/admin/services/${serviceId}`,
+        {
+          method: 'DELETE',
+        }
+      );
+
+      if (editingServiceId === serviceId) {
+        setEditingServiceId('');
+        setEditingServiceForm(emptyServiceForm);
+      }
+
+      setMessage('Service deleted.');
+      await loadAdminServices();
+      await loadAdminInstructors();
+      await refreshPublicData();
+    } catch (deleteError) {
+      if (!handleSessionError(deleteError)) {
+        setError(deleteError.message);
+      }
+    }
+  }
+
   async function handleEditingServiceSubmit(event, serviceId) {
     event.preventDefault();
     setServiceLoading(true);
@@ -979,19 +1603,41 @@ export default function App() {
   const reviewableBookings = pastBookings.filter((booking) => !reviewLookup.has(String(booking._id)));
   const isAdmin = user?.role === 'admin';
   const isMember = user?.role === 'user';
+  const allAdminLocations = Array.from(
+    new Map(
+      adminServices
+        .flatMap((service) => service.locations || [])
+        .map((location) => [location.id, location])
+    ).values()
+  );
+  const selectedAdminLocation =
+    allAdminLocations.find((location) => location.id === selectedAdminLocationId) ||
+    allAdminLocations[0] ||
+    null;
   const selectedBookingService = services.find((service) => service._id === bookingForm.serviceId) || services[0] || null;
   const selectedBookingLocation =
     selectedBookingService?.locations?.find((location) => location.id === bookingForm.locationId) ||
     selectedBookingService?.locations?.[0] ||
     null;
+  const bookingInstructorPool =
+    selectedBookingService?.bookingMode === 'self-led'
+      ? []
+      : getAssignedInstructorsForServiceLocation(selectedBookingService, selectedBookingLocation?.id, instructors);
+  const preferredBookingInstructor =
+    bookingInstructorPool.find((instructor) => instructor._id === bookingForm.preferredInstructorId) || null;
   const availableBookingSlots = selectedBookingService
-    ? generateServiceSlots(selectedBookingService, bookingForm.bookingDate, selectedBookingLocation?.id)
+    ? generateServiceSlots(selectedBookingService, bookingForm.bookingDate, selectedBookingLocation?.id, instructors)
     : [];
-  const selectedBookingSlot = availableBookingSlots.find((slot) => slot.time === bookingForm.slotTime) || null;
+  const visibleBookingSlots = preferredBookingInstructor
+    ? availableBookingSlots.filter((slot) => slot.instructorOptions.includes(preferredBookingInstructor.name))
+    : availableBookingSlots;
+  const selectedBookingSlot = visibleBookingSlots.find((slot) => slot.time === bookingForm.slotTime) || null;
   const bookingInstructorOptions =
     selectedBookingService?.bookingMode === 'self-led'
       ? []
-      : selectedBookingSlot?.instructorOptions || selectedBookingLocation?.instructors || [];
+      : preferredBookingInstructor
+        ? [preferredBookingInstructor.name]
+        : selectedBookingSlot?.instructorOptions || bookingInstructorPool.map((instructor) => instructor.name);
   const isUsingCreditForBooking =
     Boolean(activeCreditBooking) &&
     Boolean(selectedBookingService) &&
@@ -1002,11 +1648,52 @@ export default function App() {
     selectedOverrideService?.locations?.find((location) => location.id === overrideForm.locationId) ||
     selectedOverrideService?.locations?.[0] ||
     null;
+  const overrideInstructorPool = getAssignedInstructorsForServiceLocation(
+    selectedOverrideService,
+    selectedOverrideLocation?.id,
+    adminInstructors.filter((instructor) => instructor.active !== false)
+  );
   const overrideSlots = selectedOverrideService
-    ? generateServiceSlots(selectedOverrideService, overrideForm.date, selectedOverrideLocation?.id)
+    ? generateServiceSlots(
+        selectedOverrideService,
+        overrideForm.date,
+        selectedOverrideLocation?.id,
+        adminInstructors.filter((instructor) => instructor.active !== false)
+      )
     : [];
   const selectedOverrideSlot = overrideSlots.find((slot) => slot.time === overrideForm.time) || null;
-  const overrideInstructorOptions = selectedOverrideSlot?.instructorOptions || selectedOverrideLocation?.instructors || [];
+  const overrideInstructorOptions =
+    selectedOverrideSlot?.availableInstructorOptions || overrideInstructorPool.map((instructor) => instructor.name);
+  const selectedAvailabilityInstructor =
+    adminInstructors.find((instructor) => instructor._id === availabilityExplorer.instructorId) || null;
+  const availabilityServiceOptions = selectedAvailabilityInstructor
+    ? adminServices.filter((service) =>
+        (selectedAvailabilityInstructor.serviceIds || []).map(String).includes(String(service._id))
+      )
+    : adminServices;
+  const selectedAvailabilityService =
+    availabilityServiceOptions.find((service) => service._id === availabilityExplorer.serviceId) ||
+    availabilityServiceOptions[0] ||
+    null;
+  const availabilityLocationOptions = selectedAvailabilityService
+    ? (selectedAvailabilityService.locations || []).filter((location) =>
+        !selectedAvailabilityInstructor ||
+        (selectedAvailabilityInstructor.locationIds || []).includes(location.id)
+      )
+    : [];
+  const selectedAvailabilityLocation =
+    availabilityLocationOptions.find((location) => location.id === availabilityExplorer.locationId) ||
+    availabilityLocationOptions[0] ||
+    null;
+  const instructorAvailabilitySlots =
+    selectedAvailabilityInstructor && selectedAvailabilityService && availabilityExplorer.date
+      ? generateServiceSlots(
+          selectedAvailabilityService,
+          availabilityExplorer.date,
+          selectedAvailabilityLocation?.id,
+          adminInstructors.filter((instructor) => instructor.active !== false)
+        ).filter((slot) => slot.instructorOptions.includes(selectedAvailabilityInstructor.name))
+      : [];
   const activeAdminBookings = bookings.filter((booking) => !['Cancelled', 'Rejected'].includes(booking.status));
   const cancelledAdminBookings = bookings.filter((booking) => booking.status === 'Cancelled');
   const attendedAdminBookings = activeAdminBookings.filter((booking) => booking.attendanceStatus === 'Attended');
@@ -1065,6 +1752,59 @@ export default function App() {
   const locationCount = new Set(
     services.flatMap((service) => (service.locations || []).map((location) => location.id || location.name))
   ).size;
+  const locationScheduleDays = selectedAdminLocation
+    ? Array.from({ length: 7 }, (_, offset) => {
+        const dayDate = addDays(new Date(), offset);
+        dayDate.setHours(0, 0, 0, 0);
+        const isoDate = dayDate.toISOString().slice(0, 10);
+        const entries = adminServices
+          .filter(
+            (service) =>
+              service.active !== false &&
+              (service.locations || []).some((location) => location.id === selectedAdminLocation.id)
+          )
+          .flatMap((service) => {
+            const locationConfig =
+              (service.locations || []).find((location) => location.id === selectedAdminLocation.id) || null;
+            if (service.bookingMode === 'self-led') {
+              return [{
+                key: `${isoDate}-${service._id}-open-gym`,
+                serviceName: service.name,
+                category: service.category,
+                time: `${padTime(Number(service.schedule.startHour || 6))}:00`,
+                timeLabel: `Open ${formatHourLabel(service.schedule.startHour || 6)} - ${formatHourLabel(service.schedule.endHour || 24)}`,
+                bookingMode: service.bookingMode,
+                instructorNames: [],
+                detailLabel: `${service.schedule.intervalMinutes || 30}-minute increments`,
+              }];
+            }
+
+            return generateServiceSlots(
+              service,
+              isoDate,
+              selectedAdminLocation.id,
+              adminInstructors.filter((instructor) => instructor.active !== false)
+            ).map((slot) => ({
+              key: `${isoDate}-${service._id}-${slot.time}`,
+              serviceName: service.name,
+              category: service.category,
+              time: slot.time,
+              timeLabel: slot.label,
+              bookingMode: service.bookingMode,
+              instructorNames: slot.instructorName ? [slot.instructorName] : locationConfig?.instructors || [],
+              detailLabel: '',
+            }));
+          })
+          .sort((left, right) => left.time.localeCompare(right.time) || left.serviceName.localeCompare(right.serviceName));
+
+        return {
+          key: isoDate,
+          weekday: dayDate.toLocaleDateString('en-US', { weekday: 'long' }),
+          dateLabel: dayDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          entries,
+        };
+      })
+    : [];
   const calendarWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const currentMonthSessions = adminUpcomingSessions.filter((session) => {
     const sessionDate = new Date(session.appointmentDate);
@@ -1088,6 +1828,7 @@ export default function App() {
   ];
   const adminPages = [
     { id: 'services', label: 'Services' },
+    { id: 'locations', label: 'Locations' },
     { id: 'instructors', label: 'Instructors' },
     { id: 'schedule', label: 'Schedule' },
   ];
@@ -1100,6 +1841,16 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [showAuth]);
+
+  useEffect(() => {
+    if (allAdminLocations.length === 0) {
+      return;
+    }
+
+    if (!allAdminLocations.some((location) => location.id === selectedAdminLocationId)) {
+      setSelectedAdminLocationId(allAdminLocations[0].id);
+    }
+  }, [allAdminLocations, selectedAdminLocationId]);
 
   if (authChecking) {
     return (
@@ -1122,7 +1873,11 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell${!showAuth && isAdmin ? ' admin-shell' : ''}`}>
+    <div
+      className={`app-shell${!showAuth && isAdmin ? ' admin-shell' : ''}${
+        !showAuth && isAdmin && (adminPage === 'instructors' || adminPage === 'locations') ? ' admin-expanded-shell' : ''
+      }`}
+    >
       {showAuth ? (
         <header className="hero">
           <div className="hero-topline">
@@ -1220,10 +1975,37 @@ export default function App() {
               ))}
             </nav>
           ) : null}
+
+          {user && !user.emailVerified ? (
+            <section className="panel verification-banner">
+              <div>
+                <p className="panel-kicker">Email Verification</p>
+                <h2>Verify your email to protect your account.</h2>
+                <p className="section-copy">
+                  We’ve added secure account verification and password recovery. Send yourself a fresh verification link any time.
+                </p>
+              </div>
+              <button type="button" className="secondary-button" onClick={handleRequestVerification} disabled={profileLoading}>
+                {profileLoading ? 'Sending...' : 'Send verification email'}
+              </button>
+            </section>
+          ) : null}
         </>
       )}
 
-      {activeNotice ? (
+      {authTransition ? (
+        <div className={`auth-transition-screen ${authTransition.phase === 'fade' ? 'fade-out' : ''}`} role="status" aria-live="polite">
+          <div className="auth-transition-card">
+            <p className="notice-kicker">{authTransition.title}</p>
+            <h2>{authTransition.text}</h2>
+            <div className="auth-transition-loader" aria-hidden="true">
+              <span />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {activeNotice && !authTransition ? (
         <div className="notice-overlay" role="status" aria-live="polite">
           <div className={`notice-modal ${activeNotice.type === 'error' ? 'error' : 'success'}`}>
             <p className="notice-kicker">{activeNotice.title}</p>
@@ -1238,15 +2020,25 @@ export default function App() {
             <div className="auth-switcher">
               <button
                 type="button"
-                className={view === 'login' ? 'tab-button active' : 'tab-button'}
-                onClick={() => setView('login')}
+                className={view === 'login' || view === 'forgot-password' || view === 'reset-password' || view === 'verify-email' ? 'tab-button active' : 'tab-button'}
+                onClick={() => {
+                  clearAuthQueryParams();
+                  setVerificationToken('');
+                  setResetPasswordForm(emptyResetPasswordForm);
+                  setView('login');
+                }}
               >
                 Log In
               </button>
               <button
                 type="button"
                 className={view === 'register' ? 'tab-button active' : 'tab-button'}
-                onClick={() => setView('register')}
+                onClick={() => {
+                  clearAuthQueryParams();
+                  setVerificationToken('');
+                  setResetPasswordForm(emptyResetPasswordForm);
+                  setView('register');
+                }}
               >
                 Register
               </button>
@@ -1277,7 +2069,98 @@ export default function App() {
                 <button type="submit" disabled={authLoading}>
                   {authLoading ? 'Creating account...' : 'Create account'}
                 </button>
+                <button type="button" className="text-button" onClick={() => setView('login')}>
+                  Already have an account? Sign in
+                </button>
               </form>
+            ) : view === 'forgot-password' ? (
+              <form className="booking-form" onSubmit={handleForgotPassword}>
+                <h2>Reset Password</h2>
+                <p className="form-note">Enter your account email and we’ll send a reset link.</p>
+                <label>
+                  Account email
+                  <input
+                    name="email"
+                    type="email"
+                    value={forgotPasswordForm.email}
+                    onChange={updateForm(setForgotPasswordForm)}
+                    required
+                  />
+                </label>
+                <button type="submit" disabled={authLoading}>
+                  {authLoading ? 'Sending link...' : 'Send reset link'}
+                </button>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    clearAuthQueryParams();
+                    setView('login');
+                  }}
+                >
+                  Back to sign in
+                </button>
+              </form>
+            ) : view === 'reset-password' ? (
+              <form className="booking-form" onSubmit={handleResetPassword}>
+                <h2>Choose a New Password</h2>
+                <p className="form-note">This secure reset link lets you choose a fresh password for your account.</p>
+                <label>
+                  New password
+                  <input
+                    name="password"
+                    type="password"
+                    value={resetPasswordForm.password}
+                    onChange={updateForm(setResetPasswordForm)}
+                    required
+                  />
+                </label>
+                <label>
+                  Confirm new password
+                  <input
+                    name="confirmPassword"
+                    type="password"
+                    value={resetPasswordForm.confirmPassword}
+                    onChange={updateForm(setResetPasswordForm)}
+                    required
+                  />
+                </label>
+                <button type="submit" disabled={authLoading}>
+                  {authLoading ? 'Saving password...' : 'Reset password'}
+                </button>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    clearAuthQueryParams();
+                    setResetPasswordForm(emptyResetPasswordForm);
+                    setView('login');
+                  }}
+                >
+                  Back to sign in
+                </button>
+              </form>
+            ) : view === 'verify-email' ? (
+              <div className="booking-form auth-info-card">
+                <h2>Verify Your Email</h2>
+                <p className="form-note">
+                  Finish setting up your account by confirming your email address from the secure link we sent you.
+                </p>
+                <button type="button" onClick={handleVerifyEmail} disabled={authLoading}>
+                  {authLoading ? 'Verifying...' : 'Verify email'}
+                </button>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    clearAuthQueryParams();
+                    setVerificationToken('');
+                    setView(user ? 'app' : 'login');
+                  }}
+                >
+                  Back
+                </button>
+              </div>
             ) : (
               <form className="booking-form" onSubmit={handleLogin}>
                 <h2>Sign In</h2>
@@ -1303,6 +2186,9 @@ export default function App() {
                 </label>
                 <button type="submit" disabled={authLoading}>
                   {authLoading ? 'Signing in...' : 'Sign in'}
+                </button>
+                <button type="button" className="text-button" onClick={() => setView('forgot-password')}>
+                  Forgot your password?
                 </button>
               </form>
             )}
@@ -1405,7 +2291,7 @@ export default function App() {
                       <p className="panel-kicker">Operations</p>
                       <h2>Admin Controls</h2>
                     </div>
-                    <p className="section-copy">Create new services up top, then edit or deactivate each existing service inline below.</p>
+                    <p className="section-copy">Create new services up top, then edit, deactivate, or permanently remove each existing service inline below.</p>
                     <div className="admin-summary">
                       <div className="summary-card">
                         <strong>{activeAdminBookings.length}</strong>
@@ -1627,6 +2513,9 @@ export default function App() {
                                     Deactivate
                                   </button>
                                 ) : null}
+                                <button type="button" className="secondary-button" onClick={() => handleDeleteService(service._id)}>
+                                  Delete
+                                </button>
                               </div>
                             </article>
                           )})}
@@ -1637,183 +2526,661 @@ export default function App() {
                 </>
               ) : null}
 
-              {adminPage === 'instructors' ? (
-                <section className="panel panel-emphasis">
-                  <div className="panel-heading">
-                    <p className="panel-kicker">Instructor Schedule</p>
-                    <h2>Instructor Overrides</h2>
-                  </div>
-                  <p className="section-copy">Assign a one-time instructor change for a specific class time and location.</p>
-                  <div className="booking-insight-row">
-                    <article className="booking-helper-card booking-helper-card-compact">
-                      <strong>Selected service</strong>
-                      <span>{selectedOverrideService?.name || 'Choose a service'}</span>
-                    </article>
-                    <article className="booking-helper-card booking-helper-card-compact">
-                      <strong>Location team</strong>
-                      <span>
-                        {selectedOverrideLocation
-                          ? `${selectedOverrideLocation.name} · ${selectedOverrideLocation.instructors.length || 0} instructors`
-                          : 'Choose a location to see your instructor pool.'}
-                      </span>
-                    </article>
-                  </div>
-                  <form className="booking-form" onSubmit={handleOverrideSubmit}>
-                    <div className="form-grid-two">
-                      <label>
-                        Service
-                        <select
-                          name="serviceId"
-                          value={overrideForm.serviceId}
-                          onChange={(event) => {
-                            const nextService = adminServices.find((service) => service._id === event.target.value);
-                            setOverrideForm((current) => ({
-                              ...current,
-                              serviceId: event.target.value,
-                              locationId: nextService?.locations?.[0]?.id || '',
-                              date: '',
-                              time: '',
-                              instructorName: '',
-                            }));
-                          }}
-                          required
-                        >
-                          {adminServices.map((service) => (
-                            <option key={service._id} value={service._id}>
-                              {service.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Location
-                        <select
-                          name="locationId"
-                          value={overrideForm.locationId}
-                          onChange={(event) =>
-                            setOverrideForm((current) => ({
-                              ...current,
-                              locationId: event.target.value,
-                              time: '',
-                              instructorName: '',
-                            }))
-                          }
-                          required
-                        >
-                          {(selectedOverrideService?.locations || []).map((location) => (
-                            <option key={location.id} value={location.id}>
-                              {location.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Date
-                        <input
-                          name="date"
-                          type="date"
-                          value={overrideForm.date}
-                          min={new Date().toISOString().slice(0, 10)}
-                          onChange={(event) =>
-                            setOverrideForm((current) => ({
-                              ...current,
-                              date: event.target.value,
-                              time: '',
-                              instructorName: '',
-                            }))
-                          }
-                          required
-                        />
-                      </label>
-                      <label>
-                        Class time
-                        <select
-                          name="time"
-                          value={overrideForm.time}
-                          onChange={(event) =>
-                            setOverrideForm((current) => ({
-                              ...current,
-                              time: event.target.value,
-                              instructorName:
-                                overrideSlots.find((slot) => slot.time === event.target.value)?.defaultInstructor || '',
-                            }))
-                          }
-                          disabled={!overrideForm.date}
-                          required
-                        >
-                          <option value="">{overrideForm.date ? 'Select a class time' : 'Choose a date first'}</option>
-                          {overrideSlots.map((slot) => (
-                            <option key={slot.time} value={slot.time}>
-                              {slot.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Instructor
-                        <select
-                          name="instructorName"
-                          value={overrideForm.instructorName}
-                          onChange={updateForm(setOverrideForm)}
-                          disabled={!overrideForm.time}
-                          required
-                        >
-                          <option value="">{overrideForm.time ? 'Select instructor' : 'Choose a time first'}</option>
-                          {overrideInstructorOptions.map((instructor) => (
-                            <option key={instructor} value={instructor}>
-                              {instructor}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="booking-helper-card booking-helper-card-compact">
-                        <strong>Override preview</strong>
-                        <span>
-                          {overrideForm.date && overrideForm.time
-                            ? `${overrideForm.date} at ${formatTimeLabel(overrideForm.time)}`
-                            : 'Pick a date and time to preview the override.'}
-                        </span>
+              {adminPage === 'locations' ? (
+                <>
+                  <section className="panel panel-emphasis bookings-panel">
+                    <div className="panel-heading">
+                      <p className="panel-kicker">Studio Map</p>
+                      <h2>Locations</h2>
+                    </div>
+                    <p className="section-copy">Keep every studio address, local service mix, and teaching footprint in one place before you review the live schedule.</p>
+                    <div className="location-selector-grid">
+                      {allAdminLocations.map((location) => {
+                        const servicesAtLocation = adminServices.filter((service) =>
+                          (service.locations || []).some((serviceLocation) => serviceLocation.id === location.id)
+                        );
+                        const instructorsAtLocation = adminInstructors.filter(
+                          (instructor) =>
+                            instructor.active !== false &&
+                            (instructor.locationIds || []).map(String).includes(String(location.id))
+                        );
+
+                        return (
+                          <button
+                            key={location.id}
+                            type="button"
+                            className={`location-selector-card${selectedAdminLocation?.id === location.id ? ' active' : ''}`}
+                            onClick={() => setSelectedAdminLocationId(location.id)}
+                          >
+                            <div className="location-selector-topline">
+                              <h3>{location.name}</h3>
+                              <span>{selectedAdminLocation?.id === location.id ? 'Viewing' : 'Select'}</span>
+                            </div>
+                            <p className="location-selector-address">{location.address}</p>
+                            <div className="location-selector-stats">
+                              <span>{servicesAtLocation.length} services</span>
+                              <span>{instructorsAtLocation.length} instructors</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+
+                  <section className="panel bookings-panel">
+                    <div className="location-schedule-header">
+                      <div>
+                        <p className="panel-kicker">Location Schedule</p>
+                        <h2>{selectedAdminLocation ? `${selectedAdminLocation.name} Weekly Teaching Board` : 'Select a location'}</h2>
+                        <p className="section-copy">
+                          {selectedAdminLocation
+                            ? `${selectedAdminLocation.address}. Review the next seven days of classes, instructors, and session times in one clean schedule view.`
+                            : 'Choose a location above to review its upcoming weekly schedule.'}
+                        </p>
                       </div>
                     </div>
-                    <button type="submit" disabled={overrideLoading}>
-                      {overrideLoading ? 'Saving...' : 'Save instructor change'}
-                    </button>
-                  </form>
 
-                  <div className="service-list admin-override-list">
-                    {(selectedOverrideService?.scheduleOverrides || []).length === 0 ? (
-                      <p>No instructor changes have been scheduled yet.</p>
+                    {selectedAdminLocation ? (
+                      <div className="location-schedule-grid">
+                        {locationScheduleDays.map((day) => (
+                          <article key={day.key} className="location-day-card">
+                            <div className="location-day-header">
+                              <div>
+                                <h3>{day.weekday}</h3>
+                                <span>{day.dateLabel}</span>
+                              </div>
+                              <strong>{day.entries.length} session{day.entries.length === 1 ? '' : 's'}</strong>
+                            </div>
+                            {day.entries.length > 0 ? (
+                              <div className="location-session-list">
+                                {day.entries.map((entry) => (
+                                  <article key={entry.key} className="location-session-row">
+                                    <div className="location-session-meta">
+                                      <span>{entry.timeLabel}</span>
+                                      <span>{entry.category}</span>
+                                    </div>
+                                    <strong>{entry.serviceName}</strong>
+                                    <p className="location-session-instructor">
+                                      {entry.bookingMode === 'self-led'
+                                        ? entry.detailLabel
+                                        : `Teaching: ${entry.instructorNames.join(', ')}`}
+                                    </p>
+                                  </article>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="section-copy">No classes scheduled for this location on that day.</p>
+                            )}
+                          </article>
+                        ))}
+                      </div>
                     ) : (
-                      selectedOverrideService.scheduleOverrides
-                        .slice()
-                        .sort((left, right) =>
-                          `${left.date}-${left.time}`.localeCompare(`${right.date}-${right.time}`)
-                        )
-                        .map((override) => {
-                          const overrideLocation = selectedOverrideService.locations.find((location) => location.id === override.locationId);
-                          return (
-                            <article key={override.id} className="service-card">
-                              <div className="service-card-header">
-                                <h3>{override.instructorName}</h3>
-                                <span>{formatTimeLabel(override.time)}</span>
-                              </div>
-                              <p>
-                                {override.date} at {overrideLocation?.name || 'Selected location'}
-                              </p>
-                              <p>{overrideLocation?.address}</p>
-                              <div className="admin-actions">
-                                <button
-                                  type="button"
-                                  className="danger-button"
-                                  onClick={() => handleRemoveOverride(selectedOverrideService._id, override.id)}
-                                >
-                                  Remove override
-                                </button>
-                              </div>
-                            </article>
-                          );
-                        })
+                      <p className="section-copy">No studio locations are available yet.</p>
                     )}
+                  </section>
+                </>
+              ) : null}
+
+              {adminPage === 'instructors' ? (
+                <section className="panel panel-emphasis bookings-panel">
+                  <div className="panel-heading">
+                    <p className="panel-kicker">Instructor Team</p>
+                    <h2>Employee Overview & Availability</h2>
+                  </div>
+                  <p className="section-copy">Manage employee details, decide when instructors work, and make one-time coverage changes without losing sight of the wider team schedule.</p>
+                  <div className="instructor-page-columns">
+                    <div className="instructor-page-column">
+                      <div className="panel inset-panel instructor-summary-panel">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Team Snapshot</p>
+                          <h2>Instructor Team</h2>
+                        </div>
+                        <p className="section-copy">Keep the team roster, active coverage, and multi-location staffing in view before you make schedule changes.</p>
+                        <div className="booking-insight-row">
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Team members</strong>
+                            <span>{adminInstructors.length} instructors in the directory</span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Active coverage</strong>
+                            <span>
+                              {adminInstructors.filter((instructor) => instructor.active !== false).length} currently bookable instructors
+                            </span>
+                          </article>
+                          <article className="booking-helper-card booking-helper-card-compact">
+                            <strong>Locations covered</strong>
+                            <span>
+                              {new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size} studio locations
+                            </span>
+                          </article>
+                        </div>
+                      </div>
+
+                      <div className="panel inset-panel instructor-directory-panel">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Directory</p>
+                          <h2>Employee Overview</h2>
+                        </div>
+                        <p className="section-copy">Review the whole employee roster, current assignments, and weekly work windows without leaving the instructor workspace.</p>
+                        <div className="employee-overview-grid compact-employee-grid">
+                          {adminInstructors.map((instructor) => {
+                            const instructorServices = adminServices.filter((service) =>
+                              (instructor.serviceIds || []).map(String).includes(String(service._id))
+                            );
+                            const instructorLocations = allAdminLocations.filter((location) =>
+                              (instructor.locationIds || []).includes(location.id)
+                            );
+
+                            return (
+                              <article key={instructor._id} className="service-card employee-card">
+                                <div className="service-card-header">
+                                  <h3>{instructor.name}</h3>
+                                  <span>{instructor.active !== false ? 'Active' : 'Inactive'}</span>
+                                </div>
+                                <p className="employee-title">{instructor.title}</p>
+                                <p>{instructor.bio}</p>
+                                <div className="employee-meta">
+                                  <span>{instructor.email}</span>
+                                  <span>{instructor.phone}</span>
+                                </div>
+                                <div className="tag-list">
+                                  {instructorServices.map((service) => (
+                                    <span key={service._id} className="tag-chip">
+                                      {service.name}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="tag-list">
+                                  {instructorLocations.map((location) => (
+                                    <span key={location.id} className="tag-chip tag-chip-muted">
+                                      {location.name}
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="employee-availability-list">
+                                  {(instructor.weeklyAvailability || []).slice(0, 4).map((block, index) => {
+                                    const locationName =
+                                      allAdminLocations.find((location) => location.id === block.locationId)?.name || block.locationId;
+                                    const dayLabel =
+                                      weekdayOptions.find((day) => day.value === Number(block.dayOfWeek))?.label || 'Day';
+                                    return (
+                                      <span key={`${block.locationId}-${block.dayOfWeek}-${index}`}>
+                                        {dayLabel} · {locationName} · {formatTimeLabel(block.startTime)} - {formatTimeLabel(block.endTime)}
+                                      </span>
+                                    );
+                                  })}
+                                  {(instructor.weeklyAvailability || []).length > 4 ? (
+                                    <span>+{instructor.weeklyAvailability.length - 4} more availability windows</span>
+                                  ) : null}
+                                </div>
+                                <div className="admin-actions">
+                                  <button type="button" onClick={() => startEditingInstructor(instructor)}>
+                                    {editingInstructorId === instructor._id ? 'Close editor' : 'Edit employee'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => {
+                                      const firstService = adminServices.find((service) =>
+                                        (instructor.serviceIds || []).map(String).includes(String(service._id))
+                                      );
+                                      const firstLocation =
+                                        (firstService?.locations || []).find((location) =>
+                                          (instructor.locationIds || []).includes(location.id)
+                                        ) || firstService?.locations?.[0];
+                                      setOverrideForm({
+                                        serviceId: firstService?._id || '',
+                                        date: '',
+                                        locationId: firstLocation?.id || '',
+                                        time: '',
+                                        instructorName: instructor.name,
+                                      });
+                                    }}
+                                  >
+                                    Use in override
+                                  </button>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="instructor-page-column">
+                      <div className="panel inset-panel">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">{editingInstructorId ? 'Edit Employee' : 'New Employee'}</p>
+                          <h2>{editingInstructorId ? 'Update Instructor Details' : 'Add a New Instructor'}</h2>
+                        </div>
+                        <p className="section-copy">Create a new team member, decide what they teach, where they work, and add their weekly teaching windows.</p>
+                        <form className="booking-form" onSubmit={handleInstructorSubmit}>
+                        <div className="form-grid-two">
+                          <label>
+                            Full name
+                            <input name="name" value={instructorForm.name} onChange={updateForm(setInstructorForm)} required />
+                          </label>
+                          <label>
+                            Title
+                            <input name="title" value={instructorForm.title} onChange={updateForm(setInstructorForm)} required />
+                          </label>
+                          <label>
+                            Email
+                            <input name="email" type="email" value={instructorForm.email} onChange={updateForm(setInstructorForm)} required />
+                          </label>
+                          <label>
+                            Phone
+                            <input name="phone" value={instructorForm.phone} onChange={updateForm(setInstructorForm)} required />
+                          </label>
+                        </div>
+
+                        <label>
+                          Bio
+                          <textarea name="bio" value={instructorForm.bio} onChange={updateForm(setInstructorForm)} rows="4" required />
+                        </label>
+
+                        <div className="form-split-section">
+                          <div>
+                            <strong className="section-subtitle">Services they can teach</strong>
+                            <div className="checkbox-pill-grid">
+                              {adminServices.map((service) => (
+                                <label key={service._id} className="checkbox-pill">
+                                  <input
+                                    type="checkbox"
+                                    checked={instructorForm.serviceIds.includes(service._id)}
+                                    onChange={() => toggleInstructorArrayField('serviceIds', service._id)}
+                                  />
+                                  <span>{service.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <strong className="section-subtitle">Studio locations</strong>
+                            <div className="checkbox-pill-grid">
+                              {allAdminLocations.map((location) => (
+                                <label key={location.id} className="checkbox-pill">
+                                  <input
+                                    type="checkbox"
+                                    checked={instructorForm.locationIds.includes(location.id)}
+                                    onChange={() => toggleInstructorArrayField('locationIds', location.id)}
+                                  />
+                                  <span>{location.name}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="availability-editor">
+                          <div className="section-heading-inline">
+                            <strong className="section-subtitle">Weekly availability</strong>
+                            <button type="button" className="secondary-button" onClick={addInstructorAvailabilityRow}>
+                              Add work window
+                            </button>
+                          </div>
+                          {instructorForm.weeklyAvailability.map((block, index) => (
+                            <div key={`${block.locationId}-${block.dayOfWeek}-${index}`} className="availability-row">
+                              <label>
+                                Day
+                                <select
+                                  value={block.dayOfWeek}
+                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'dayOfWeek', Number(event.target.value))}
+                                >
+                                  {weekdayOptions.map((day) => (
+                                    <option key={day.value} value={day.value}>
+                                      {day.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Location
+                                <select
+                                  value={block.locationId}
+                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'locationId', event.target.value)}
+                                >
+                                  {(instructorForm.locationIds.length > 0
+                                    ? allAdminLocations.filter((location) => instructorForm.locationIds.includes(location.id))
+                                    : allAdminLocations
+                                  ).map((location) => (
+                                    <option key={location.id} value={location.id}>
+                                      {location.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Start
+                                <input
+                                  type="time"
+                                  value={block.startTime}
+                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'startTime', event.target.value)}
+                                />
+                              </label>
+                              <label>
+                                End
+                                <input
+                                  type="time"
+                                  value={block.endTime}
+                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'endTime', event.target.value)}
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => removeInstructorAvailabilityRow(index)}
+                                disabled={instructorForm.weeklyAvailability.length === 1}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+
+                        <label className="checkbox-row">
+                          <input
+                            name="active"
+                            type="checkbox"
+                            checked={instructorForm.active}
+                            onChange={(event) =>
+                              setInstructorForm((current) => ({ ...current, active: event.target.checked }))
+                            }
+                          />
+                          Instructor is active for booking
+                        </label>
+
+                        <div className="admin-actions">
+                          <button type="submit" disabled={instructorLoading}>
+                            {instructorLoading ? 'Saving...' : editingInstructorId ? 'Save employee' : 'Add instructor'}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => {
+                              setEditingInstructorId('');
+                              setInstructorForm(createEmptyInstructorForm(allAdminLocations[0]?.id || ''));
+                            }}
+                          >
+                            Reset form
+                          </button>
+                        </div>
+                        </form>
+                      </div>
+
+                      <div className="panel inset-panel">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Availability</p>
+                          <h2>Book By Instructor</h2>
+                        </div>
+                        <p className="section-copy">See exactly when a team member is available to teach at a chosen location before you set an override or answer member questions.</p>
+                        <div className="booking-form">
+                          <div className="form-grid-two">
+                            <label>
+                              Instructor
+                              <select
+                                value={availabilityExplorer.instructorId}
+                                onChange={(event) => {
+                                  const nextInstructor = adminInstructors.find((instructor) => instructor._id === event.target.value);
+                                  const nextService = adminServices.find((service) =>
+                                    (nextInstructor?.serviceIds || []).map(String).includes(String(service._id))
+                                  );
+                                  const nextLocation = (nextService?.locations || []).find((location) =>
+                                    (nextInstructor?.locationIds || []).includes(location.id)
+                                  );
+                                  setAvailabilityExplorer((current) => ({
+                                    ...current,
+                                    instructorId: event.target.value,
+                                    serviceId: nextService?._id || '',
+                                    locationId: nextLocation?.id || '',
+                                  }));
+                                }}
+                              >
+                                {adminInstructors.map((instructor) => (
+                                  <option key={instructor._id} value={instructor._id}>
+                                    {instructor.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Service
+                              <select
+                                value={selectedAvailabilityService?._id || ''}
+                                onChange={(event) => {
+                                  const nextService = adminServices.find((service) => service._id === event.target.value);
+                                  setAvailabilityExplorer((current) => ({
+                                    ...current,
+                                    serviceId: event.target.value,
+                                    locationId: nextService?.locations?.[0]?.id || '',
+                                  }));
+                                }}
+                              >
+                                {availabilityServiceOptions.map((service) => (
+                                  <option key={service._id} value={service._id}>
+                                    {service.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Location
+                              <select
+                                value={selectedAvailabilityLocation?.id || ''}
+                                onChange={(event) =>
+                                  setAvailabilityExplorer((current) => ({ ...current, locationId: event.target.value }))
+                                }
+                              >
+                                {availabilityLocationOptions.map((location) => (
+                                  <option key={location.id} value={location.id}>
+                                    {location.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Date
+                              <input
+                                type="date"
+                                value={availabilityExplorer.date}
+                                min={new Date().toISOString().slice(0, 10)}
+                                onChange={(event) =>
+                                  setAvailabilityExplorer((current) => ({ ...current, date: event.target.value }))
+                                }
+                              />
+                            </label>
+                          </div>
+                        </div>
+                        <div className="availability-chip-grid">
+                          {availabilityExplorer.date ? (
+                            instructorAvailabilitySlots.length > 0 ? (
+                              instructorAvailabilitySlots.map((slot) => (
+                                <span key={slot.time} className="availability-chip">
+                                  {slot.label}
+                                </span>
+                              ))
+                            ) : (
+                              <p className="section-copy">No available class times for that instructor on the selected date.</p>
+                            )
+                          ) : (
+                            <p className="section-copy">Pick a date to see that instructor’s teaching windows.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="panel inset-panel">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Override</p>
+                          <h2>One-Time Coverage Change</h2>
+                        </div>
+                        <p className="section-copy">Use this when a specific class needs a new instructor without changing the standard weekly schedule.</p>
+                        <form className="booking-form" onSubmit={handleOverrideSubmit}>
+                          <div className="form-grid-two">
+                            <label>
+                              Service
+                              <select
+                                name="serviceId"
+                                value={overrideForm.serviceId}
+                                onChange={(event) => {
+                                  const nextService = adminServices.find((service) => service._id === event.target.value);
+                                  setOverrideForm((current) => ({
+                                    ...current,
+                                    serviceId: event.target.value,
+                                    locationId: nextService?.locations?.[0]?.id || '',
+                                    date: '',
+                                    time: '',
+                                    instructorName: '',
+                                  }));
+                                }}
+                                required
+                              >
+                                {adminServices.map((service) => (
+                                  <option key={service._id} value={service._id}>
+                                    {service.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Location
+                              <select
+                                name="locationId"
+                                value={overrideForm.locationId}
+                                onChange={(event) =>
+                                  setOverrideForm((current) => ({
+                                    ...current,
+                                    locationId: event.target.value,
+                                    time: '',
+                                    instructorName: '',
+                                  }))
+                                }
+                                required
+                              >
+                                {(selectedOverrideService?.locations || []).map((location) => (
+                                  <option key={location.id} value={location.id}>
+                                    {location.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Date
+                              <input
+                                name="date"
+                                type="date"
+                                value={overrideForm.date}
+                                min={new Date().toISOString().slice(0, 10)}
+                                onChange={(event) =>
+                                  setOverrideForm((current) => ({
+                                    ...current,
+                                    date: event.target.value,
+                                    time: '',
+                                    instructorName: '',
+                                  }))
+                                }
+                                required
+                              />
+                            </label>
+                            <label>
+                              Class time
+                              <select
+                                name="time"
+                                value={overrideForm.time}
+                                onChange={(event) =>
+                                  setOverrideForm((current) => ({
+                                    ...current,
+                                    time: event.target.value,
+                                    instructorName:
+                                      overrideSlots.find((slot) => slot.time === event.target.value)?.defaultInstructor || '',
+                                  }))
+                                }
+                                disabled={!overrideForm.date}
+                                required
+                              >
+                                <option value="">{overrideForm.date ? 'Select a class time' : 'Choose a date first'}</option>
+                                {overrideSlots.map((slot) => (
+                                  <option key={slot.time} value={slot.time}>
+                                    {slot.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              Instructor
+                              <select
+                                name="instructorName"
+                                value={overrideForm.instructorName}
+                                onChange={updateForm(setOverrideForm)}
+                                disabled={!overrideForm.time}
+                                required
+                              >
+                                <option value="">{overrideForm.time ? 'Select instructor' : 'Choose a time first'}</option>
+                                {overrideInstructorOptions.map((instructor) => (
+                                  <option key={instructor} value={instructor}>
+                                    {instructor}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <div className="booking-helper-card booking-helper-card-compact">
+                              <strong>Override preview</strong>
+                              <span>
+                                {overrideForm.date && overrideForm.time
+                                  ? `${overrideForm.date} at ${formatTimeLabel(overrideForm.time)}`
+                                  : 'Pick a date and time to preview the override.'}
+                              </span>
+                            </div>
+                          </div>
+                          <button type="submit" disabled={overrideLoading}>
+                            {overrideLoading ? 'Saving...' : 'Save instructor change'}
+                          </button>
+                        </form>
+                      </div>
+
+                      <div className="panel inset-panel">
+                        <div className="panel-heading compact-heading">
+                          <p className="panel-kicker">Saved Changes</p>
+                          <h2>Scheduled Coverage Changes</h2>
+                        </div>
+                        <p className="section-copy">Review every one-time instructor swap tied to the currently selected service.</p>
+                        <div className="service-list admin-override-list">
+                          {(selectedOverrideService?.scheduleOverrides || []).length === 0 ? (
+                            <p>No instructor changes have been scheduled yet.</p>
+                          ) : (
+                            selectedOverrideService.scheduleOverrides
+                              .slice()
+                              .sort((left, right) =>
+                                `${left.date}-${left.time}`.localeCompare(`${right.date}-${right.time}`)
+                              )
+                              .map((override) => {
+                                const overrideLocation = selectedOverrideService.locations.find((location) => location.id === override.locationId);
+                                return (
+                                  <article key={override.id} className="service-card">
+                                    <div className="service-card-header">
+                                      <h3>{override.instructorName}</h3>
+                                      <span>{formatTimeLabel(override.time)}</span>
+                                    </div>
+                                    <p>
+                                      {override.date} at {overrideLocation?.name || 'Selected location'}
+                                    </p>
+                                    <p>{overrideLocation?.address}</p>
+                                    <div className="admin-actions">
+                                      <button
+                                        type="button"
+                                        className="danger-button"
+                                        onClick={() => handleRemoveOverride(selectedOverrideService._id, override.id)}
+                                      >
+                                        Remove override
+                                      </button>
+                                    </div>
+                                  </article>
+                                );
+                              })
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </section>
               ) : null}
@@ -1999,6 +3366,7 @@ export default function App() {
                                     locationId: nextService?.locations?.[0]?.id || '',
                                     bookingDate: '',
                                     slotTime: '',
+                                    preferredInstructorId: '',
                                     instructorName: '',
                                   }));
                                 }}
@@ -2021,6 +3389,7 @@ export default function App() {
                                   setBookingForm((current) => ({
                                     ...current,
                                     locationId: event.target.value,
+                                    preferredInstructorId: '',
                                     slotTime: '',
                                     instructorName: '',
                                   }))
@@ -2035,6 +3404,33 @@ export default function App() {
                               </select>
                             </label>
 
+                            {selectedBookingService?.bookingMode === 'instructor-led' ? (
+                              <label>
+                                Book with instructor
+                                <select
+                                  name="preferredInstructorId"
+                                  value={bookingForm.preferredInstructorId}
+                                  onChange={(event) => {
+                                    const nextInstructor =
+                                      bookingInstructorPool.find((instructor) => instructor._id === event.target.value) || null;
+                                    setBookingForm((current) => ({
+                                      ...current,
+                                      preferredInstructorId: event.target.value,
+                                      slotTime: '',
+                                      instructorName: nextInstructor?.name || '',
+                                    }));
+                                  }}
+                                >
+                                  <option value="">Any instructor at this location</option>
+                                  {bookingInstructorPool.map((instructor) => (
+                                    <option key={instructor._id} value={instructor._id}>
+                                      {instructor.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            ) : null}
+
                             <label>
                               Date
                               <input
@@ -2047,7 +3443,7 @@ export default function App() {
                                     ...current,
                                     bookingDate: event.target.value,
                                     slotTime: '',
-                                    instructorName: '',
+                                    instructorName: preferredBookingInstructor?.name || '',
                                   }))
                                 }
                                 required
@@ -2060,21 +3456,21 @@ export default function App() {
                                 name="slotTime"
                                 value={bookingForm.slotTime}
                                 onChange={(event) => {
-                                  const nextSlot = availableBookingSlots.find((slot) => slot.time === event.target.value);
+                                  const nextSlot = visibleBookingSlots.find((slot) => slot.time === event.target.value);
                                   setBookingForm((current) => ({
                                     ...current,
                                     slotTime: event.target.value,
                                     instructorName:
                                       selectedBookingService?.bookingMode === 'self-led'
                                         ? ''
-                                        : nextSlot?.defaultInstructor || '',
+                                        : preferredBookingInstructor?.name || nextSlot?.defaultInstructor || '',
                                   }));
                                 }}
                                 required
                                 disabled={!bookingForm.bookingDate}
                               >
                                 <option value="">{bookingForm.bookingDate ? 'Select a class time' : 'Choose a date first'}</option>
-                                {availableBookingSlots.map((slot) => (
+                                {visibleBookingSlots.map((slot) => (
                                   <option key={slot.time} value={slot.time}>
                                     {slot.label}
                                   </option>
@@ -2085,26 +3481,39 @@ export default function App() {
 
                           {selectedBookingService?.bookingMode === 'instructor-led' ? (
                             <div className="form-grid-two">
-                              <label>
-                                Instructor
-                                <select
-                                  name="instructorName"
-                                  value={bookingForm.instructorName}
-                                  onChange={updateForm(setBookingForm)}
-                                  required
-                                  disabled={!bookingForm.slotTime}
-                                >
-                                  <option value="">{bookingForm.slotTime ? 'Select an instructor' : 'Choose a time first'}</option>
-                                  {bookingInstructorOptions.map((instructor) => (
-                                    <option key={instructor} value={instructor}>
-                                      {instructor}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
+                              {preferredBookingInstructor ? (
+                                <div className="booking-helper-card booking-helper-card-compact">
+                                  <strong>Chosen instructor</strong>
+                                  <span>{preferredBookingInstructor.name}</span>
+                                </div>
+                              ) : (
+                                <label>
+                                  Instructor
+                                  <select
+                                    name="instructorName"
+                                    value={bookingForm.instructorName}
+                                    onChange={updateForm(setBookingForm)}
+                                    required
+                                    disabled={!bookingForm.slotTime}
+                                  >
+                                    <option value="">{bookingForm.slotTime ? 'Select an instructor' : 'Choose a time first'}</option>
+                                    {bookingInstructorOptions.map((instructor) => (
+                                      <option key={instructor} value={instructor}>
+                                        {instructor}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              )}
                               <div className="booking-helper-card booking-helper-card-compact">
-                                <strong>Selected instructor</strong>
-                                <span>{bookingForm.instructorName || 'An instructor will appear once you choose a class time.'}</span>
+                                <strong>Instructor availability</strong>
+                                <span>
+                                  {preferredBookingInstructor && bookingForm.bookingDate
+                                    ? visibleBookingSlots.length > 0
+                                      ? `${preferredBookingInstructor.name} is teaching ${visibleBookingSlots.length} time${visibleBookingSlots.length === 1 ? '' : 's'} on this date.`
+                                      : `${preferredBookingInstructor.name} has no remaining times at this location on that date.`
+                                    : bookingForm.instructorName || 'Choose an instructor to see their available teaching windows.'}
+                                </span>
                               </div>
                             </div>
                           ) : (
@@ -2173,12 +3582,13 @@ export default function App() {
                                     value={bookingForm.paymentCardNumber}
                                     onChange={updateForm(setBookingForm)}
                                     inputMode="numeric"
-                                    placeholder="4242 4242 4242 4242"
+                                    placeholder="1111 2222 3333 4444"
+                                    autoComplete="cc-number"
                                     required
                                   />
                                 </label>
                               </div>
-                              <p className="form-note">Demo checkout only. We save the amount and last 4 digits, not the full card number.</p>
+                              <p className="form-note">Demo checkout only. Enter any 16 digits. We only save the amount and last 4 digits, not the full card number.</p>
                             </div>
                           )}
                           <button type="submit" disabled={bookingLoading || loadingServices}>
@@ -2340,6 +3750,10 @@ export default function App() {
                         <span>{profileForm.membershipNumber || 'Will appear after registration.'}</span>
                       </article>
                       <article className="booking-helper-card booking-helper-card-compact">
+                        <strong>Email status</strong>
+                        <span>{user?.emailVerified ? 'Verified' : 'Pending verification'}</span>
+                      </article>
+                      <article className="booking-helper-card booking-helper-card-compact">
                         <strong>Password changes</strong>
                         <span>Use your current password to confirm any email or password update.</span>
                       </article>
@@ -2387,6 +3801,16 @@ export default function App() {
                       <button type="submit" disabled={profileLoading}>
                         {profileLoading ? 'Saving...' : 'Save profile'}
                       </button>
+                      {!user?.emailVerified ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={handleRequestVerification}
+                          disabled={profileLoading}
+                        >
+                          {profileLoading ? 'Sending...' : 'Send verification email'}
+                        </button>
+                      ) : null}
                     </form>
                   </section>
 

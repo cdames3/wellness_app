@@ -1,15 +1,41 @@
 const express = require('express');
+const helmet = require('helmet');
 const http = require('http');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
+const { rateLimit } = require('express-rate-limit');
 const { randomUUID, scryptSync, timingSafeEqual, createHash } = require('crypto');
 require('dotenv').config();
 const Service = require('./models/Service');
 const Booking = require('./models/Booking');
 const User = require('./models/User');
 const Review = require('./models/Review');
+const Instructor = require('./models/Instructor');
 const Session = require('./models/Session');
+const AuthToken = require('./models/AuthToken');
+const { getAppBaseUrl, sendAppEmail } = require('./lib/mailer');
+const {
+  roundCurrency,
+  buildAppointmentDate,
+  isSelfLedService,
+  isUpcomingAppointment,
+  calculateNoShowOutcome,
+} = require('./lib/business-rules');
+const {
+  isValidDateInput,
+  validateRegisterPayload,
+  validateLoginPayload,
+  validateTokenPayload,
+  validateForgotPasswordPayload,
+  validateResetPasswordPayload,
+  validateProfilePayload,
+  validateServicePayload,
+  validateInstructorPayload,
+  validateOverridePayload,
+  validateBookingPayload,
+  validateReviewPayload,
+} = require('./lib/validation');
 
 const app = express();
 const server = http.createServer(app);
@@ -20,8 +46,11 @@ const HOST = process.env.HOST || (IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1');
 const ALLOW_DEMO_MODE = process.env.ALLOW_DEMO_MODE === 'true' || !IS_PRODUCTION;
 const SEED_DEMO_USERS = process.env.SEED_DEMO_USERS === 'true' || !IS_PRODUCTION;
 const SESSION_COOKIE_NAME = 'wellness_session';
+const CSRF_COOKIE_NAME = 'wellness_csrf';
 const SESSION_DURATION_DAYS = Math.max(1, Number(process.env.SESSION_DURATION_DAYS || 7));
 const SESSION_DURATION_MS = SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000;
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const DEMO_DATA_PATH = path.join(__dirname, 'data', 'demo-data.json');
 const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',')
@@ -66,18 +95,254 @@ const studioLocations = [
   },
 ];
 
-function createLocations(instructors = []) {
-  return studioLocations.map((location, index) => ({
-    ...location,
-    instructors: instructors[index % instructors.length] || instructors,
+function slugifyInstructorName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function minutesToTimeValue(totalMinutes) {
+  const safeMinutes = Math.max(0, Math.min(totalMinutes, (23 * 60) + 59));
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function timeValueToMinutes(value) {
+  const [hours, minutes] = String(value || '').split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return Number.NaN;
+  }
+
+  return (hours * 60) + minutes;
+}
+
+function getInstructorTitleForService(service) {
+  const normalizedName = String(service?.name || '').toLowerCase();
+  const normalizedCategory = String(service?.category || '').toLowerCase();
+
+  if (normalizedName.includes('pilates')) {
+    return 'Pilates Instructor';
+  }
+
+  if (normalizedCategory.includes('massage')) {
+    return 'Massage Therapist';
+  }
+
+  if (normalizedCategory.includes('spa')) {
+    return 'Spa Specialist';
+  }
+
+  return 'Wellness Coach';
+}
+
+function getInstructorBioForService(name, service) {
+  if (String(service?.name || '').toLowerCase().includes('pilates')) {
+    return `${name} leads mindful movement sessions with a focus on clean form, strength, and studio calm.`;
+  }
+
+  if (String(service?.category || '').toLowerCase().includes('massage')) {
+    return `${name} creates restorative bodywork sessions centered on recovery, stress relief, and thoughtful care.`;
+  }
+
+  if (String(service?.category || '').toLowerCase().includes('spa')) {
+    return `${name} guides spa guests through a warm, grounding wellness ritual with elevated service and attention to detail.`;
+  }
+
+  return `${name} supports members with a welcoming, polished studio experience and dependable class coverage.`;
+}
+
+function withInstructorDefaults(instructor) {
+  if (!instructor) {
+    return null;
+  }
+
+  const plainInstructor = typeof instructor.toObject === 'function' ? instructor.toObject() : { ...instructor };
+
+  return {
+    ...plainInstructor,
+    email: String(plainInstructor.email || '').trim().toLowerCase(),
+    active: plainInstructor.active !== false,
+    serviceIds: Array.isArray(plainInstructor.serviceIds) ? plainInstructor.serviceIds.map((item) => String(item)) : [],
+    locationIds: Array.isArray(plainInstructor.locationIds) ? plainInstructor.locationIds.map((item) => String(item)) : [],
+    weeklyAvailability: Array.isArray(plainInstructor.weeklyAvailability)
+      ? plainInstructor.weeklyAvailability.map((block) => ({
+          dayOfWeek: Number(block.dayOfWeek),
+          locationId: String(block.locationId),
+          startTime: String(block.startTime),
+          endTime: String(block.endTime),
+        }))
+      : [],
+  };
+}
+
+function buildDefaultInstructorSeed(services = []) {
+  const instructorMap = new Map();
+
+  services
+    .map((service) => withServiceDefaults(service))
+    .filter((service) => service && !isSelfLedService(service))
+    .forEach((service) => {
+      service.locations.forEach((location) => {
+        (location.instructors || []).forEach((name) => {
+          const trimmedName = String(name || '').trim();
+          if (!trimmedName) {
+            return;
+          }
+
+          const slug = slugifyInstructorName(trimmedName);
+          const existingInstructor = instructorMap.get(slug) || {
+            name: trimmedName,
+            title: getInstructorTitleForService(service),
+            email: `${slug}@wellnessstudio.demo`,
+            phone: `404-555-${String(instructorMap.size + 101).slice(-4)}`,
+            bio: getInstructorBioForService(trimmedName, service),
+            active: true,
+            serviceIds: new Set(),
+            locationIds: new Set(),
+            weeklyAvailabilityByLocation: new Map(),
+          };
+
+          existingInstructor.serviceIds.add(String(service._id));
+          existingInstructor.locationIds.add(location.id);
+
+          const currentWindow = existingInstructor.weeklyAvailabilityByLocation.get(location.id) || {
+            startMinutes: Number(service.schedule?.startHour || 6) * 60,
+            endMinutes: Math.min(Number(service.schedule?.endHour || 20) * 60, (23 * 60) + 59),
+          };
+
+          currentWindow.startMinutes = Math.min(
+            currentWindow.startMinutes,
+            Number(service.schedule?.startHour || 6) * 60
+          );
+          currentWindow.endMinutes = Math.max(
+            currentWindow.endMinutes,
+            Math.min(Number(service.schedule?.endHour || 20) * 60, (23 * 60) + 59)
+          );
+
+          existingInstructor.weeklyAvailabilityByLocation.set(location.id, currentWindow);
+          instructorMap.set(slug, existingInstructor);
+        });
+      });
+    });
+
+  return Array.from(instructorMap.values()).map((instructor) => ({
+    name: instructor.name,
+    title: instructor.title,
+    email: instructor.email,
+    phone: instructor.phone,
+    bio: instructor.bio,
+    active: instructor.active,
+    serviceIds: Array.from(instructor.serviceIds),
+    locationIds: Array.from(instructor.locationIds),
+    weeklyAvailability: Array.from(instructor.weeklyAvailabilityByLocation.entries()).flatMap(
+      ([locationId, window]) =>
+        [1, 2, 3, 4, 5, 6, 0].map((dayOfWeek) => ({
+          dayOfWeek,
+          locationId,
+          startTime: minutesToTimeValue(window.startMinutes),
+          endTime: minutesToTimeValue(window.endMinutes),
+        }))
+    ),
   }));
 }
 
-function createServiceConfig({ bookingMode, startHour, endHour, intervalMinutes, instructors }) {
+function createMemoryInstructorRecord(instructorData) {
+  return {
+    _id: randomUUID(),
+    ...instructorData,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function getAssignedInstructorRecords(service, locationId, instructorDirectory = []) {
+  const serviceId = String(service?._id || '');
+  if (!serviceId || !locationId) {
+    return [];
+  }
+
+  return instructorDirectory.filter(
+    (instructor) =>
+      instructor.active !== false &&
+      instructor.serviceIds.includes(serviceId) &&
+      instructor.locationIds.includes(String(locationId))
+  );
+}
+
+function isInstructorAvailableForSlot(instructor, date, locationId, time) {
+  const slotDate = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(slotDate.getTime())) {
+    return false;
+  }
+
+  const dayOfWeek = slotDate.getDay();
+  const slotMinutes = timeValueToMinutes(time);
+
+  return instructor.weeklyAvailability.some((block) => {
+    if (Number(block.dayOfWeek) !== dayOfWeek || String(block.locationId) !== String(locationId)) {
+      return false;
+    }
+
+    const startMinutes = timeValueToMinutes(block.startTime);
+    const endMinutes = timeValueToMinutes(block.endTime);
+    return slotMinutes >= startMinutes && slotMinutes < endMinutes;
+  });
+}
+
+function withInstructorAssignments(service, instructorDirectory = []) {
+  const shapedService = withServiceDefaults(service);
+  if (!shapedService) {
+    return null;
+  }
+
+  return {
+    ...shapedService,
+    locations: shapedService.locations.map((location) => {
+      const assignedInstructorNames = getAssignedInstructorRecords(
+        shapedService,
+        location.id,
+        instructorDirectory
+      )
+        .map((instructor) => instructor.name)
+        .sort((left, right) => left.localeCompare(right));
+
+      return {
+        ...location,
+        instructors:
+          assignedInstructorNames.length > 0
+            ? assignedInstructorNames
+            : Array.isArray(location.instructors)
+              ? location.instructors
+              : [],
+      };
+    }),
+  };
+}
+
+function createLocations(locationProfiles = [], bookingMode = 'instructor-led') {
+  return studioLocations.map((location, index) => {
+    const profile = locationProfiles[index] || {};
+    return {
+      ...location,
+      instructors: Array.isArray(profile.instructors) ? profile.instructors : [],
+      timeSlots:
+        bookingMode === 'self-led'
+          ? []
+          : Array.isArray(profile.timeSlots)
+            ? profile.timeSlots
+            : [],
+    };
+  });
+}
+
+function createServiceConfig({ bookingMode, startHour, endHour, intervalMinutes, locationProfiles = [] }) {
   return {
     bookingMode,
     schedule: { startHour, endHour, intervalMinutes },
-    locations: bookingMode === 'self-led' ? createLocations([]) : createLocations(instructors),
+    locations: createLocations(locationProfiles, bookingMode),
     scheduleOverrides: [],
   };
 }
@@ -141,14 +406,14 @@ const defaultServices = [
       startHour: 6,
       endHour: 20,
       intervalMinutes: 90,
-      instructors: [
-        ['Ashley Monroe', 'Maria Torres'],
-        ['Ashley Monroe', 'Nina Brooks'],
-        ['Maria Torres', 'Leah Bryant'],
-        ['Leah Bryant', 'Sofia Bennett'],
-        ['Nina Brooks', 'Maria Torres'],
-        ['Ashley Monroe', 'Sofia Bennett'],
-        ['Leah Bryant', 'Nina Brooks'],
+      locationProfiles: [
+        { instructors: ['Ashley Monroe', 'Maria Torres'], timeSlots: ['06:30', '12:00', '18:00'] },
+        { instructors: ['Ashley Monroe', 'Nina Brooks'], timeSlots: ['07:00', '12:30', '17:30'] },
+        { instructors: ['Maria Torres', 'Leah Bryant'], timeSlots: ['06:00', '10:30', '18:30'] },
+        { instructors: ['Leah Bryant', 'Sofia Bennett'], timeSlots: ['07:30', '13:00'] },
+        { instructors: ['Nina Brooks', 'Maria Torres'], timeSlots: ['06:30', '11:30', '17:00'] },
+        { instructors: ['Ashley Monroe', 'Sofia Bennett'], timeSlots: ['08:00', '12:00', '17:00'] },
+        { instructors: ['Leah Bryant', 'Nina Brooks'], timeSlots: ['07:00', '16:30'] },
       ],
     }),
   },
@@ -164,14 +429,14 @@ const defaultServices = [
       startHour: 9,
       endHour: 18,
       intervalMinutes: 60,
-      instructors: [
-        ['Jasmine Cole', 'Elena Hart'],
-        ['Jasmine Cole', 'Riley Scott'],
-        ['Elena Hart', 'Ava Coleman'],
-        ['Riley Scott', 'Jasmine Cole'],
-        ['Ava Coleman', 'Elena Hart'],
-        ['Riley Scott', 'Ava Coleman'],
-        ['Jasmine Cole', 'Elena Hart'],
+      locationProfiles: [
+        { instructors: ['Jasmine Cole', 'Elena Hart'], timeSlots: ['09:00', '13:00', '17:00'] },
+        { instructors: ['Jasmine Cole', 'Riley Scott'], timeSlots: ['10:00', '14:00'] },
+        { instructors: ['Elena Hart', 'Ava Coleman'], timeSlots: ['09:30', '12:30', '16:30'] },
+        { instructors: ['Riley Scott', 'Jasmine Cole'], timeSlots: ['11:00', '15:00'] },
+        { instructors: ['Ava Coleman', 'Elena Hart'], timeSlots: ['09:00', '13:30'] },
+        { instructors: ['Riley Scott', 'Ava Coleman'], timeSlots: ['10:30', '16:00'] },
+        { instructors: ['Jasmine Cole', 'Elena Hart'], timeSlots: ['09:00', '12:00', '15:30'] },
       ],
     }),
   },
@@ -187,14 +452,14 @@ const defaultServices = [
       startHour: 10,
       endHour: 19,
       intervalMinutes: 45,
-      instructors: [
-        ['Camila Reed', 'Olivia Stone'],
-        ['Olivia Stone', 'Mia Larson'],
-        ['Camila Reed', 'Mia Larson'],
-        ['Olivia Stone', 'Zoe Harper'],
-        ['Zoe Harper', 'Camila Reed'],
-        ['Mia Larson', 'Olivia Stone'],
-        ['Camila Reed', 'Zoe Harper'],
+      locationProfiles: [
+        { instructors: ['Camila Reed', 'Olivia Stone'], timeSlots: ['10:00', '14:00'] },
+        { instructors: ['Olivia Stone', 'Mia Larson'], timeSlots: ['11:00', '15:00'] },
+        { instructors: ['Camila Reed', 'Mia Larson'], timeSlots: ['10:30', '16:00'] },
+        { instructors: ['Olivia Stone', 'Zoe Harper'], timeSlots: ['12:00', '17:00'] },
+        { instructors: ['Zoe Harper', 'Camila Reed'], timeSlots: ['10:00', '13:30'] },
+        { instructors: ['Mia Larson', 'Olivia Stone'], timeSlots: ['11:30', '16:30'] },
+        { instructors: ['Camila Reed', 'Zoe Harper'], timeSlots: ['10:30', '15:30'] },
       ],
     }),
   },
@@ -210,7 +475,7 @@ const defaultServices = [
       startHour: 6,
       endHour: 24,
       intervalMinutes: 30,
-      instructors: [],
+      locationProfiles: [],
     }),
   },
 ];
@@ -238,11 +503,38 @@ let memoryServices = defaultServices.map((service) => ({
   _id: randomUUID(),
   active: true,
 }));
+let memoryInstructors = buildDefaultInstructorSeed(memoryServices).map(createMemoryInstructorRecord);
 let memoryBookings = [];
 let memoryUsers = [];
 let memoryReviews = [];
+let memoryAuthTokens = [];
 
 app.disable('x-powered-by');
+app.set('trust proxy', IS_PRODUCTION ? 1 : 0);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many auth attempts. Please wait a few minutes and try again.' },
+});
+
+const bookingLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many booking actions right now. Please slow down and try again shortly.' },
+});
+
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many admin actions right now. Please wait and try again.' },
+});
 
 function getDefaultServiceConfig(service) {
   if (String(service?.name).toLowerCase().includes('gym')) {
@@ -251,7 +543,7 @@ function getDefaultServiceConfig(service) {
       startHour: 6,
       endHour: 24,
       intervalMinutes: 30,
-      instructors: [],
+      locationProfiles: [],
     });
   }
 
@@ -261,7 +553,10 @@ function getDefaultServiceConfig(service) {
       startHour: 6,
       endHour: 20,
       intervalMinutes: 90,
-      instructors: [['Ashley Monroe', 'Maria Torres']],
+      locationProfiles: studioLocations.map((location, index) => ({
+        instructors: index % 2 === 0 ? ['Ashley Monroe', 'Maria Torres'] : ['Leah Bryant', 'Nina Brooks'],
+        timeSlots: index % 3 === 0 ? ['06:30', '12:00', '18:00'] : ['07:00', '13:00'],
+      })),
     });
   }
 
@@ -271,7 +566,10 @@ function getDefaultServiceConfig(service) {
       startHour: 9,
       endHour: 18,
       intervalMinutes: 60,
-      instructors: [['Jasmine Cole', 'Elena Hart']],
+      locationProfiles: studioLocations.map((location, index) => ({
+        instructors: index % 2 === 0 ? ['Jasmine Cole', 'Elena Hart'] : ['Riley Scott', 'Ava Coleman'],
+        timeSlots: index % 2 === 0 ? ['09:00', '13:00', '17:00'] : ['10:00', '15:00'],
+      })),
     });
   }
 
@@ -280,8 +578,56 @@ function getDefaultServiceConfig(service) {
     startHour: 10,
     endHour: 19,
     intervalMinutes: 45,
-    instructors: [['Camila Reed', 'Olivia Stone']],
+    locationProfiles: studioLocations.map((location, index) => ({
+      instructors: index % 2 === 0 ? ['Camila Reed', 'Olivia Stone'] : ['Mia Larson', 'Zoe Harper'],
+      timeSlots: index % 2 === 0 ? ['10:00', '14:00'] : ['11:00', '16:00'],
+    })),
   });
+}
+
+function buildLocationTimeValues(service, selectedLocation) {
+  if (!service || !selectedLocation) {
+    return [];
+  }
+
+  const locationSpecificTimes = Array.isArray(selectedLocation.timeSlots)
+    ? selectedLocation.timeSlots
+        .map((value) => String(value || '').trim())
+        .filter((value) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(value))
+    : [];
+
+  if (service.bookingMode !== 'self-led' && locationSpecificTimes.length > 0) {
+    return locationSpecificTimes;
+  }
+
+  const schedule = service.schedule || {};
+  const slotCount = Math.max(
+    0,
+    ((Number(schedule.endHour || 0) - Number(schedule.startHour || 0)) * 60) /
+      Number(schedule.intervalMinutes || 60)
+  );
+
+  return Array.from({ length: slotCount }, (_, index) => {
+    const totalMinutes =
+      Number(schedule.startHour || 0) * 60 + index * Number(schedule.intervalMinutes || 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  });
+}
+
+function getOrderedAvailableInstructorNames(selectedLocation, assignedInstructorRecords, date, time) {
+  const availableInstructorNames = assignedInstructorRecords
+    .filter((instructor) => isInstructorAvailableForSlot(instructor, date, selectedLocation?.id, time))
+    .map((instructor) => instructor.name);
+
+  const locationInstructorOrder = Array.isArray(selectedLocation?.instructors)
+    ? selectedLocation.instructors.map((name) => String(name))
+    : [];
+
+  const orderedByLocation = locationInstructorOrder.filter((name) => availableInstructorNames.includes(name));
+  const remainingNames = availableInstructorNames.filter((name) => !orderedByLocation.includes(name));
+  return [...orderedByLocation, ...remainingNames];
 }
 
 function withServiceDefaults(service) {
@@ -305,10 +651,30 @@ function withServiceDefaults(service) {
       ...(plainService.schedule || {}),
     },
     locations: Array.isArray(plainService.locations) && plainService.locations.length > 0
-      ? plainService.locations.map((location) => ({
-          ...location,
-          instructors: Array.isArray(location.instructors) ? location.instructors : [],
-        }))
+      ? (() => {
+          const fallbackLocationsById = new Map(
+            fallback.locations.map((location) => [location.id, location])
+          );
+          return plainService.locations.map((location) => {
+            const fallbackLocation = fallbackLocationsById.get(location.id) || {};
+            return {
+              ...fallbackLocation,
+              ...location,
+              instructors:
+                Array.isArray(location.instructors) && location.instructors.length > 0
+                  ? location.instructors
+                  : Array.isArray(fallbackLocation.instructors)
+                    ? fallbackLocation.instructors
+                    : [],
+              timeSlots:
+                Array.isArray(location.timeSlots) && location.timeSlots.length > 0
+                  ? location.timeSlots
+                  : Array.isArray(fallbackLocation.timeSlots)
+                    ? fallbackLocation.timeSlots
+                    : [],
+            };
+          });
+        })()
       : fallback.locations,
     scheduleOverrides: Array.isArray(plainService.scheduleOverrides) ? plainService.scheduleOverrides : [],
   };
@@ -320,22 +686,6 @@ function formatTimeLabel(timeValue) {
   const normalizedHour = hourValue % 12 === 0 ? 12 : hourValue % 12;
   const paddedMinutes = String(minuteValue).padStart(2, '0');
   return `${normalizedHour}:${paddedMinutes} ${period}`;
-}
-
-function buildAppointmentDate(date, time) {
-  return new Date(`${date}T${time}:00`);
-}
-
-function roundCurrency(value) {
-  return Math.round(Number(value || 0) * 100) / 100;
-}
-
-function isSelfLedService(service) {
-  return service?.bookingMode === 'self-led' || String(service?.name || '').toLowerCase().includes('open gym');
-}
-
-function isUpcomingAppointment(appointmentDate) {
-  return appointmentDate.getTime() > Date.now();
 }
 
 function loadDemoState() {
@@ -353,9 +703,13 @@ function loadDemoState() {
     memoryServices = Array.isArray(data.services) && data.services.length > 0
       ? data.services.map(withServiceDefaults)
       : memoryServices;
+    memoryInstructors = Array.isArray(data.instructors) && data.instructors.length > 0
+      ? data.instructors.map(withInstructorDefaults)
+      : buildDefaultInstructorSeed(memoryServices).map(createMemoryInstructorRecord);
     memoryBookings = Array.isArray(data.bookings) ? data.bookings : [];
     memoryUsers = Array.isArray(data.users) ? data.users : [];
     memoryReviews = Array.isArray(data.reviews) ? data.reviews : [];
+    memoryAuthTokens = Array.isArray(data.authTokens) ? data.authTokens : [];
   } catch (error) {
     console.warn(`Unable to load demo data. Starting with fresh in-memory state. (${error.message})`);
   }
@@ -373,9 +727,11 @@ function persistDemoState() {
       JSON.stringify(
         {
           services: memoryServices,
+          instructors: memoryInstructors,
           bookings: memoryBookings,
           users: memoryUsers,
           reviews: memoryReviews,
+          authTokens: memoryAuthTokens,
         },
         null,
         2
@@ -386,62 +742,111 @@ function persistDemoState() {
   }
 }
 
-function generateServiceSlots(serviceInput, date, locationId) {
-  const service = withServiceDefaults(serviceInput);
-  const schedule = service.schedule;
+function generateServiceSlots(serviceInput, date, locationId, instructorDirectory = []) {
+  const service = withInstructorAssignments(serviceInput, instructorDirectory);
   const locations = service.locations || [];
   const selectedLocation = locations.find((location) => location.id === locationId) || locations[0];
-  const instructors = Array.isArray(selectedLocation?.instructors) ? selectedLocation.instructors : [];
-  const slotCount = Math.max(0, ((schedule.endHour - schedule.startHour) * 60) / schedule.intervalMinutes);
+  const assignedInstructorRecords = getAssignedInstructorRecords(service, selectedLocation?.id, instructorDirectory);
+  const timeValues = buildLocationTimeValues(service, selectedLocation);
 
-  return Array.from({ length: slotCount }, (_, index) => {
-    const totalMinutes = schedule.startHour * 60 + index * schedule.intervalMinutes;
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    const time = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  return timeValues.map((time, index) => {
     const matchingOverride = service.scheduleOverrides.find(
       (override) =>
         override.date === date &&
         override.time === time &&
         override.locationId === selectedLocation?.id
     );
+    const availableInstructorOptions =
+      service.bookingMode === 'self-led'
+        ? []
+        : assignedInstructorRecords.length > 0
+          ? getOrderedAvailableInstructorNames(selectedLocation, assignedInstructorRecords, date, time)
+          : Array.isArray(selectedLocation?.instructors)
+            ? selectedLocation.instructors
+            : [];
     const defaultInstructor =
       service.bookingMode === 'self-led'
         ? ''
-        : matchingOverride?.instructorName || instructors[index % Math.max(instructors.length, 1)] || '';
+        : matchingOverride?.instructorName || availableInstructorOptions[index % Math.max(availableInstructorOptions.length, 1)] || '';
+    const instructorOptions =
+      service.bookingMode === 'self-led'
+        ? []
+        : defaultInstructor
+          ? [defaultInstructor]
+          : [];
 
     return {
       time,
       label: formatTimeLabel(time),
       instructorName: defaultInstructor,
-      instructorOptions: instructors,
+      defaultInstructor,
+      instructorOptions,
+      availableInstructorOptions,
     };
   }).filter((slot) => {
     const appointment = buildAppointmentDate(date, slot.time);
-    return !Number.isNaN(appointment.getTime()) && isUpcomingAppointment(appointment);
+    return (
+      !Number.isNaN(appointment.getTime()) &&
+      isUpcomingAppointment(appointment) &&
+      (service.bookingMode === 'self-led' || slot.instructorOptions.length > 0)
+    );
   });
+}
+
+async function listInstructors(includeInactive = false) {
+  if (databaseReady) {
+    const query = includeInactive ? {} : { active: true };
+    const instructors = await Instructor.find(query).sort({ name: 1 });
+    return instructors.map(withInstructorDefaults);
+  }
+
+  return memoryInstructors
+    .filter((instructor) => (includeInactive ? true : instructor.active !== false))
+    .map(withInstructorDefaults)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function findInstructorById(id) {
+  return databaseReady
+    ? withInstructorDefaults(await Instructor.findById(id))
+    : withInstructorDefaults(memoryInstructors.find((instructor) => instructor._id === id) || null);
+}
+
+async function findInstructorByEmail(email) {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  return databaseReady
+    ? withInstructorDefaults(await Instructor.findOne({ email: normalizedEmail }))
+    : withInstructorDefaults(memoryInstructors.find((instructor) => instructor.email === normalizedEmail) || null);
 }
 
 async function listServices(includeInactive = false) {
   if (databaseReady) {
     const query = includeInactive ? {} : { active: true };
     const services = await Service.find(query).sort({ createdAt: 1 });
-    return services.map(withServiceDefaults);
+    const instructors = await listInstructors(true);
+    return services.map((service) => withInstructorAssignments(service, instructors));
   }
 
   return memoryServices
     .filter((service) => (includeInactive ? true : service.active))
-    .map(withServiceDefaults);
+    .map((service) => withInstructorAssignments(service, memoryInstructors));
 }
 
 async function findServiceById(id) {
-  return databaseReady
-    ? withServiceDefaults(await Service.findById(id))
-    : withServiceDefaults(memoryServices.find((service) => service._id === id) || null);
+  const service = databaseReady
+    ? await Service.findById(id)
+    : memoryServices.find((item) => item._id === id) || null;
+
+  if (!service) {
+    return null;
+  }
+
+  const instructors = await listInstructors(true);
+  return withInstructorAssignments(service, instructors);
 }
 
 async function createService(serviceData) {
-  return databaseReady ? withServiceDefaults(await Service.create(serviceData)) : (() => {
+  return databaseReady ? withInstructorAssignments(await Service.create(serviceData), await listInstructors(true)) : (() => {
     const service = {
       _id: randomUUID(),
       ...serviceData,
@@ -449,13 +854,13 @@ async function createService(serviceData) {
     };
     memoryServices.push(service);
     persistDemoState();
-    return withServiceDefaults(service);
+    return withInstructorAssignments(service, memoryInstructors);
   })();
 }
 
 async function updateServiceById(id, updates) {
   return databaseReady
-    ? withServiceDefaults(await Service.findByIdAndUpdate(id, updates, { new: true }))
+    ? withInstructorAssignments(await Service.findByIdAndUpdate(id, updates, { new: true }), await listInstructors(true))
     : (() => {
         const service = memoryServices.find((item) => item._id === id);
         if (!service) {
@@ -463,8 +868,67 @@ async function updateServiceById(id, updates) {
         }
         Object.assign(service, updates);
         persistDemoState();
-        return withServiceDefaults(service);
+        return withInstructorAssignments(service, memoryInstructors);
       })();
+}
+
+async function createInstructor(instructorData) {
+  return databaseReady ? withInstructorDefaults(await Instructor.create(instructorData)) : (() => {
+    const instructor = createMemoryInstructorRecord({
+      ...instructorData,
+      email: String(instructorData.email).trim().toLowerCase(),
+    });
+    memoryInstructors.push(instructor);
+    persistDemoState();
+    return withInstructorDefaults(instructor);
+  })();
+}
+
+async function updateInstructorById(id, updates) {
+  return databaseReady
+    ? withInstructorDefaults(await Instructor.findByIdAndUpdate(id, updates, { new: true }))
+    : (() => {
+        const instructor = memoryInstructors.find((item) => item._id === id);
+        if (!instructor) {
+          return null;
+        }
+        Object.assign(instructor, updates, { updatedAt: new Date().toISOString() });
+        persistDemoState();
+        return withInstructorDefaults(instructor);
+      })();
+}
+
+async function deleteServiceById(id) {
+  if (databaseReady) {
+    const deletedService = await Service.findByIdAndDelete(id);
+    if (!deletedService) {
+      return null;
+    }
+    await Instructor.updateMany({}, { $pull: { serviceIds: deletedService._id } });
+    return withServiceDefaults(deletedService);
+  }
+
+  const serviceIndex = memoryServices.findIndex((service) => service._id === id);
+  if (serviceIndex === -1) {
+    return null;
+  }
+
+  const [deletedService] = memoryServices.splice(serviceIndex, 1);
+  memoryInstructors = memoryInstructors.map((instructor) => ({
+    ...instructor,
+    serviceIds: Array.isArray(instructor.serviceIds)
+      ? instructor.serviceIds.filter((serviceId) => String(serviceId) !== String(id))
+      : [],
+    updatedAt: new Date().toISOString(),
+  }));
+  persistDemoState();
+  return withServiceDefaults(deletedService);
+}
+
+async function countBookingsForService(serviceId) {
+  return databaseReady
+    ? Booking.countDocuments({ service: serviceId })
+    : memoryBookings.filter((booking) => String(booking.service?._id || booking.service) === String(serviceId)).length;
 }
 
 async function listReviews() {
@@ -560,6 +1024,7 @@ function sanitizeUser(user) {
     role: user.role,
     membershipNumber: user.membershipNumber,
     membershipActive: user.membershipActive,
+    emailVerified: Boolean(user.emailVerified),
   };
 }
 
@@ -623,6 +1088,16 @@ function setSessionCookie(res, token) {
   }));
 }
 
+function setCsrfCookie(res, token) {
+  res.append('Set-Cookie', serializeCookie(CSRF_COOKIE_NAME, token, {
+    httpOnly: false,
+    secure: IS_PRODUCTION,
+    sameSite: IS_PRODUCTION ? 'None' : 'Lax',
+    maxAge: SESSION_DURATION_MS / 1000,
+    path: '/',
+  }));
+}
+
 function clearSessionCookie(res) {
   res.append('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, '', {
     httpOnly: true,
@@ -632,6 +1107,69 @@ function clearSessionCookie(res) {
     expires: new Date(0),
     path: '/',
   }));
+}
+
+function clearCsrfCookie(res) {
+  res.append('Set-Cookie', serializeCookie(CSRF_COOKIE_NAME, '', {
+    httpOnly: false,
+    secure: IS_PRODUCTION,
+    sameSite: IS_PRODUCTION ? 'None' : 'Lax',
+    maxAge: 0,
+    expires: new Date(0),
+    path: '/',
+  }));
+}
+
+function issueSessionCookies(res, sessionToken) {
+  setSessionCookie(res, sessionToken);
+  setCsrfCookie(res, randomUUID());
+}
+
+function logRequest(req, res, startedAt) {
+  const durationMs = Date.now() - startedAt;
+  const logEntry = {
+    level: res.statusCode >= 500 ? 'error' : 'info',
+    method: req.method,
+    path: req.originalUrl,
+    status: res.statusCode,
+    durationMs,
+    ip: req.ip,
+    userId: req.user?._id || null,
+  };
+
+  console.log(JSON.stringify(logEntry));
+}
+
+function logServerError(event, error, details = {}) {
+  console.error(JSON.stringify({
+    level: 'error',
+    event,
+    message: error?.message || 'Unknown server error',
+    ...details,
+  }));
+}
+
+function sendValidationError(res, errors) {
+  return res.status(400).json({
+    message: errors[0] || 'Please review the form and try again.',
+    errors,
+  });
+}
+
+function requireCsrf(req, res, next) {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return next();
+  }
+
+  const cookies = parseCookies(req.headers.cookie || '');
+  const csrfCookie = cookies[CSRF_COOKIE_NAME] || '';
+  const csrfHeader = String(req.headers['x-csrf-token'] || '').trim();
+
+  if (!csrfCookie || !csrfHeader || csrfCookie !== csrfHeader) {
+    return res.status(403).json({ message: 'Security check failed. Please refresh the page and try again.' });
+  }
+
+  return next();
 }
 
 async function createSession(user) {
@@ -654,6 +1192,128 @@ async function createSession(user) {
   }
 
   return token;
+}
+
+function getAuthActionUrl(mode, token) {
+  const url = new URL(getAppBaseUrl());
+  url.searchParams.set('mode', mode);
+  url.searchParams.set('token', token);
+  return url.toString();
+}
+
+async function deleteAuthTokensForUser(userId, type) {
+  if (!userId || !type) {
+    return;
+  }
+
+  if (databaseReady) {
+    await AuthToken.deleteMany({ user: userId, type });
+    return;
+  }
+
+  memoryAuthTokens = memoryAuthTokens.filter(
+    (item) => !(item.userId === String(userId) && item.type === type)
+  );
+  persistDemoState();
+}
+
+async function createAuthToken(userId, type, ttlMs) {
+  const token = randomUUID();
+  const tokenHash = hashSessionToken(token);
+  const expiresAt = new Date(Date.now() + ttlMs);
+
+  await deleteAuthTokensForUser(userId, type);
+
+  if (databaseReady) {
+    await AuthToken.create({
+      user: userId,
+      type,
+      tokenHash,
+      expiresAt,
+      usedAt: null,
+    });
+  } else {
+    memoryAuthTokens.push({
+      _id: randomUUID(),
+      userId: String(userId),
+      type,
+      tokenHash,
+      expiresAt: expiresAt.toISOString(),
+      usedAt: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    persistDemoState();
+  }
+
+  return token;
+}
+
+async function consumeAuthToken(token, type) {
+  const tokenHash = hashSessionToken(token);
+
+  if (databaseReady) {
+    const record = await AuthToken.findOne({
+      type,
+      tokenHash,
+      usedAt: null,
+      expiresAt: { $gt: new Date() },
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    record.usedAt = new Date();
+    await record.save();
+    return record;
+  }
+
+  const record = memoryAuthTokens.find((item) => {
+    const expiresAt = new Date(item.expiresAt);
+    return (
+      item.type === type &&
+      item.tokenHash === tokenHash &&
+      !item.usedAt &&
+      !Number.isNaN(expiresAt.getTime()) &&
+      expiresAt.getTime() > Date.now()
+    );
+  });
+
+  if (!record) {
+    return null;
+  }
+
+  record.usedAt = new Date().toISOString();
+  record.updatedAt = new Date().toISOString();
+  persistDemoState();
+  return record;
+}
+
+async function sendVerificationEmail(user) {
+  const token = await createAuthToken(user._id, 'email-verification', EMAIL_VERIFICATION_TTL_MS);
+  const actionUrl = getAuthActionUrl('verify-email', token);
+
+  return sendAppEmail({
+    to: user.email,
+    subject: 'Verify your Wellness Center Studio email',
+    text: `Welcome to Wellness Center Studio. Verify your email by opening this link: ${actionUrl}`,
+    html: `<p>Welcome to Wellness Center Studio.</p><p><a href="${actionUrl}">Verify your email address</a> to finish setting up your account.</p>`,
+    actionUrl,
+  });
+}
+
+async function sendPasswordResetEmail(user) {
+  const token = await createAuthToken(user._id, 'password-reset', PASSWORD_RESET_TTL_MS);
+  const actionUrl = getAuthActionUrl('reset-password', token);
+
+  return sendAppEmail({
+    to: user.email,
+    subject: 'Reset your Wellness Center Studio password',
+    text: `Reset your password by opening this link: ${actionUrl}. This link expires in 30 minutes.`,
+    html: `<p>You requested a password reset for Wellness Center Studio.</p><p><a href="${actionUrl}">Reset your password</a>. This link expires in 30 minutes.</p>`,
+    actionUrl,
+  });
 }
 
 async function findUserByEmail(email) {
@@ -717,6 +1377,8 @@ async function createUser(userData) {
       email: String(userData.email).toLowerCase(),
       membershipNumber: normalizeMembershipNumber(userData.membershipNumber),
       membershipActive: userData.membershipActive ?? true,
+      emailVerified: Boolean(userData.emailVerified),
+      emailVerifiedAt: userData.emailVerifiedAt || null,
     };
     memoryUsers.push(user);
     persistDemoState();
@@ -790,10 +1452,29 @@ async function deleteSession(token) {
   sessions.delete(token);
 }
 
+async function deleteSessionsForUser(userId) {
+  if (!userId) {
+    return;
+  }
+
+  if (databaseReady) {
+    await Session.deleteMany({ user: userId });
+    return;
+  }
+
+  const userKey = String(userId);
+  Array.from(sessions.entries()).forEach(([token, sessionRecord]) => {
+    if (String(sessionRecord.user?._id || '') === userKey) {
+      sessions.delete(token);
+    }
+  });
+}
+
 async function requireAuth(req, res, next) {
   const sessionUser = await getSessionUser(req);
   if (!sessionUser) {
     clearSessionCookie(res);
+    clearCsrfCookie(res);
     return res.status(401).json({ message: 'Please log in first.' });
   }
 
@@ -801,6 +1482,7 @@ async function requireAuth(req, res, next) {
   if (!fullUser) {
     await deleteSession(getSessionToken(req));
     clearSessionCookie(res);
+    clearCsrfCookie(res);
     return res.status(401).json({ message: 'Your session is no longer valid. Please log in again.' });
   }
 
@@ -816,18 +1498,24 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
+app.use(helmet());
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on('finish', () => logRequest(req, res, startedAt));
+  next();
+});
 app.use((req, res, next) => {
   const requestOrigin = req.headers.origin;
-  const allowedOrigin =
-    !requestOrigin || corsOrigins.includes(requestOrigin) ? requestOrigin : corsOrigins[0];
+  const allowedOrigin = requestOrigin && corsOrigins.includes(requestOrigin) ? requestOrigin : '';
 
   if (allowedOrigin) {
     res.header('Access-Control-Allow-Origin', allowedOrigin);
   }
 
+  res.header('Vary', 'Origin');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token, X-CSRF-Token');
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -836,6 +1524,23 @@ app.use((req, res, next) => {
   return next();
 });
 app.use(express.json({ limit: '1mb' }));
+app.use('/api', (req, res, next) => {
+  if (
+    ['GET', 'HEAD', 'OPTIONS'].includes(req.method) ||
+    [
+      '/auth/register',
+      '/auth/login',
+      '/auth/verify-email',
+      '/auth/forgot-password',
+      '/auth/reset-password',
+      '/health',
+    ].includes(req.path)
+  ) {
+    return next();
+  }
+
+  return requireCsrf(req, res, next);
+});
 
 async function seedServices() {
   const serviceCount = await Service.countDocuments();
@@ -843,6 +1548,22 @@ async function seedServices() {
   if (serviceCount === 0) {
     await Service.insertMany(defaultServices);
     console.log('🌱 Seeded starter wellness services');
+  }
+}
+
+async function seedInstructors() {
+  const instructorCount = await Instructor.countDocuments();
+
+  if (instructorCount > 0) {
+    return;
+  }
+
+  const services = await Service.find().sort({ createdAt: 1 });
+  const instructorSeed = buildDefaultInstructorSeed(services);
+
+  if (instructorSeed.length > 0) {
+    await Instructor.insertMany(instructorSeed);
+    console.log('🌱 Seeded starter instructor directory');
   }
 }
 
@@ -860,8 +1581,15 @@ async function seedDemoUsers() {
       role: demoAdmin.role,
       membershipNumber: demoAdmin.membershipNumber,
       membershipActive: true,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
     });
     console.log('Seeded demo admin account');
+  } else if (!existingAdmin.emailVerified) {
+    await updateUserById(existingAdmin._id, {
+      emailVerified: true,
+      emailVerifiedAt: existingAdmin.emailVerifiedAt || new Date(),
+    });
   }
 
   const existingMember = await findUserByEmail(demoMember.email);
@@ -873,8 +1601,15 @@ async function seedDemoUsers() {
       role: demoMember.role,
       membershipNumber: demoMember.membershipNumber,
       membershipActive: true,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
     });
     console.log('Seeded demo member account');
+  } else if (!existingMember.emailVerified) {
+    await updateUserById(existingMember._id, {
+      emailVerified: true,
+      emailVerifiedAt: existingMember.emailVerifiedAt || new Date(),
+    });
   }
 }
 
@@ -898,6 +1633,8 @@ async function seedBootstrapAdmin() {
     role: 'admin',
     membershipNumber: normalizeMembershipNumber(process.env.ADMIN_MEMBERSHIP_NUMBER || 'ADMIN-001'),
     membershipActive: true,
+    emailVerified: true,
+    emailVerifiedAt: new Date(),
   });
 
   console.log('Seeded production admin account from environment variables');
@@ -921,6 +1658,7 @@ async function connectDatabase() {
     databaseReady = true;
     console.log('Connected to Wellness database');
     await seedServices();
+    await seedInstructors();
     await seedBootstrapAdmin();
     await seedDemoUsers();
   } catch (error) {
@@ -939,21 +1677,17 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, message: 'Wellness backend is running' });
 });
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
-    const { name, email, password } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: 'Name, email, and password are required.' });
+    const { errors, value } = validateRegisterPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
+    const { name, email, password } = value;
     const existingUser = await findUserByEmail(email);
     if (existingUser) {
       return res.status(409).json({ message: 'An account with that email already exists.' });
-    }
-
-    if (String(password).trim().length < 8) {
-      return res.status(400).json({ message: 'Your password should be at least 8 characters long.' });
     }
 
     const membershipNumber = await generateMembershipNumber();
@@ -965,43 +1699,142 @@ app.post('/api/auth/register', async (req, res) => {
       membershipNumber,
       membershipActive: true,
       role: 'user',
+      emailVerified: false,
+      emailVerifiedAt: null,
     });
 
     const token = await createSession(newUser);
-    setSessionCookie(res, token);
+    issueSessionCookies(res, token);
+    let delivery = { delivered: false };
+    try {
+      delivery = await sendVerificationEmail(newUser);
+    } catch (emailError) {
+      logServerError('verification-email-send-failed', emailError, { userId: String(newUser._id) });
+    }
     return res.status(201).json({
       user: sanitizeUser(newUser),
+      message: delivery.delivered
+        ? 'Account created. Check your email to verify your address.'
+        : 'Account created. Check the backend terminal for your verification link in local development.',
     });
   } catch (error) {
     return res.status(500).json({ message: 'Unable to create your account right now.' });
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   try {
-    const { identifier, email, password } = req.body;
-    const loginIdentifier = String(identifier || email || '').trim();
-
-    if (!loginIdentifier || !password) {
-      return res.status(400).json({ message: 'Email or membership number and password are required.' });
+    const { errors, value } = validateLoginPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
+    const { identifier: loginIdentifier, password } = value;
     const user = await findUserByIdentifier(loginIdentifier);
     if (!user || !verifyPassword(password, user.passwordHash)) {
       return res.status(401).json({ message: 'Incorrect email, membership number, or password.' });
     }
 
     const token = await createSession(user);
-    setSessionCookie(res, token);
+    issueSessionCookies(res, token);
     return res.json({
       user: sanitizeUser(user),
+      message: user.emailVerified ? '' : 'Your email is not verified yet. You can verify it from your profile page.',
     });
   } catch (error) {
     return res.status(500).json({ message: 'Unable to log in right now.' });
   }
 });
 
+app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
+  try {
+    const { errors, value } = validateForgotPasswordPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const user = await findUserByEmail(value.email);
+    if (user) {
+      try {
+        await sendPasswordResetEmail(user);
+      } catch (emailError) {
+        logServerError('password-reset-email-send-failed', emailError, { userId: String(user._id) });
+      }
+    }
+
+    return res.json({
+      message: 'If that email exists in our system, a password reset link has been sent.',
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to start the password reset right now.' });
+  }
+});
+
+app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
+  try {
+    const { errors, value } = validateResetPasswordPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const tokenRecord = await consumeAuthToken(value.token, 'password-reset');
+    if (!tokenRecord) {
+      return res.status(400).json({ message: 'That password reset link is invalid or has expired.' });
+    }
+
+    const userId = databaseReady ? tokenRecord.user : tokenRecord.userId;
+    const user = await findUserById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'Account not found for that reset link.' });
+    }
+
+    await updateUserById(user._id, {
+      passwordHash: hashPassword(value.password),
+    });
+    await deleteSessionsForUser(user._id);
+    await deleteAuthTokensForUser(user._id, 'password-reset');
+
+    return res.json({ message: 'Your password has been reset. You can sign in now.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to reset your password right now.' });
+  }
+});
+
+app.post('/api/auth/verify-email', authLimiter, async (req, res) => {
+  try {
+    const { errors, value } = validateTokenPayload(req.body, 'verification token');
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const tokenRecord = await consumeAuthToken(value.token, 'email-verification');
+    if (!tokenRecord) {
+      return res.status(400).json({ message: 'That verification link is invalid or has expired.' });
+    }
+
+    const userId = databaseReady ? tokenRecord.user : tokenRecord.userId;
+    const user = await findUserById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'Account not found for that verification link.' });
+    }
+
+    const updatedUser = await updateUserById(user._id, {
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
+    });
+    await deleteAuthTokensForUser(user._id, 'email-verification');
+
+    return res.json({
+      message: 'Your email has been verified.',
+      user: updatedUser ? sanitizeUser(updatedUser) : null,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to verify your email right now.' });
+  }
+});
+
 app.get('/api/auth/me', requireAuth, async (req, res) => {
+  setCsrfCookie(res, randomUUID());
   res.json({ user: req.user });
 });
 
@@ -1009,16 +1842,50 @@ app.post('/api/auth/logout', async (req, res) => {
   try {
     await deleteSession(getSessionToken(req));
     clearSessionCookie(res);
+    clearCsrfCookie(res);
     return res.json({ ok: true });
   } catch (error) {
     clearSessionCookie(res);
+    clearCsrfCookie(res);
     return res.status(500).json({ message: 'Unable to log out right now.' });
   }
 });
 
-app.patch('/api/auth/me', requireAuth, async (req, res) => {
+app.post('/api/auth/request-verification', authLimiter, requireAuth, async (req, res) => {
   try {
-    const { name, membershipActive, email, currentPassword, newPassword } = req.body;
+    const fullUser = await findUserById(req.user._id);
+    if (!fullUser) {
+      return res.status(404).json({ message: 'User account not found.' });
+    }
+
+    if (fullUser.emailVerified) {
+      return res.json({ message: 'Your email address is already verified.' });
+    }
+
+    let delivery = { delivered: false };
+    try {
+      delivery = await sendVerificationEmail(fullUser);
+    } catch (emailError) {
+      logServerError('verification-email-send-failed', emailError, { userId: String(fullUser._id) });
+    }
+    return res.json({
+      message: delivery.delivered
+        ? 'Verification email sent. Please check your inbox.'
+        : 'Verification link generated. Check the backend terminal in local development.',
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to send a verification email right now.' });
+  }
+});
+
+app.patch('/api/auth/me', authLimiter, requireAuth, async (req, res) => {
+  try {
+    const { errors, value } = validateProfilePayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const { name, membershipActive, email, currentPassword, newPassword } = value;
     const updates = {};
 
     if (typeof name === 'string' && name.trim()) {
@@ -1045,6 +1912,8 @@ app.patch('/api/auth/me', requireAuth, async (req, res) => {
       }
 
       updates.email = email.trim().toLowerCase();
+      updates.emailVerified = false;
+      updates.emailVerifiedAt = null;
     }
 
     if (typeof newPassword === 'string' && newPassword.trim()) {
@@ -1071,6 +1940,20 @@ app.patch('/api/auth/me', requireAuth, async (req, res) => {
     const updatedUser = await updateUserById(req.user._id, updates);
     if (!updatedUser) {
       return res.status(404).json({ message: 'User profile not found.' });
+    }
+
+    if (updates.passwordHash) {
+      await deleteSessionsForUser(req.user._id);
+      const nextSessionToken = await createSession(updatedUser);
+      issueSessionCookies(res, nextSessionToken);
+    }
+
+    if (updates.email) {
+      try {
+        await sendVerificationEmail(updatedUser);
+      } catch (emailError) {
+        logServerError('verification-email-send-failed', emailError, { userId: String(updatedUser._id) });
+      }
     }
 
     const token = getSessionToken(req);
@@ -1100,8 +1983,8 @@ app.get('/api/services', async (req, res) => {
 app.get('/api/services/:id/availability', async (req, res) => {
   try {
     const { date, locationId } = req.query;
-    if (!date) {
-      return res.status(400).json({ message: 'Please choose a date first.' });
+    if (!date || !isValidDateInput(date)) {
+      return res.status(400).json({ message: 'Please choose a valid date first.' });
     }
 
     const service = await findServiceById(req.params.id);
@@ -1109,7 +1992,8 @@ app.get('/api/services/:id/availability', async (req, res) => {
       return res.status(404).json({ message: 'Selected service was not found.' });
     }
 
-    const slots = generateServiceSlots(service, String(date), String(locationId || ''));
+    const instructorDirectory = await listInstructors(false);
+    const slots = generateServiceSlots(service, String(date), String(locationId || ''), instructorDirectory);
     return res.json({
       serviceId: service._id,
       bookingMode: service.bookingMode,
@@ -1139,37 +2023,40 @@ app.get('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
+app.get('/api/instructors', async (req, res) => {
   try {
-    const { name, description, durationMinutes, category, capacity, price } = req.body;
+    const instructors = await listInstructors(false);
+    res.json(instructors);
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load instructors right now.' });
+  }
+});
 
-    if (!name || !description || !durationMinutes || !category || !capacity || price === undefined) {
-      return res.status(400).json({ message: 'All service fields are required.' });
+app.get('/api/admin/instructors', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const instructors = await listInstructors(true);
+    res.json(instructors);
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load instructors right now.' });
+  }
+});
+
+app.post('/api/admin/services', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { errors, value } = validateServicePayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
-    const parsedDuration = Number(durationMinutes);
-    const parsedCapacity = Number(capacity);
-    const parsedPrice = Number(price);
-
-    if (
-      !Number.isFinite(parsedDuration) ||
-      parsedDuration < 15 ||
-      !Number.isFinite(parsedCapacity) ||
-      parsedCapacity < 1 ||
-      !Number.isFinite(parsedPrice) ||
-      parsedPrice < 0
-    ) {
-      return res.status(400).json({ message: 'Duration, capacity, and price must be valid positive values.' });
-    }
-
+    const { name, description, durationMinutes, category, capacity, price } = value;
     const defaults = getDefaultServiceConfig({ name, category });
     const service = await createService({
-      name: String(name).trim(),
-      description: String(description).trim(),
-      durationMinutes: parsedDuration,
-      category: String(category).trim(),
-      capacity: parsedCapacity,
-      price: parsedPrice,
+      name,
+      description,
+      durationMinutes,
+      category,
+      capacity,
+      price,
       bookingMode: defaults.bookingMode,
       schedule: defaults.schedule,
       locations: defaults.locations,
@@ -1183,50 +2070,27 @@ app.post('/api/admin/services', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/services/:id', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { name, description, durationMinutes, category, capacity, price, active, bookingMode, schedule, locations } = req.body;
+    const { errors, value } = validateServicePayload({
+      ...req.body,
+      active: req.body.active,
+    });
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const { name, description, durationMinutes, category, capacity, price, active } = value;
+    const { bookingMode, schedule, locations } = req.body;
     const updates = {};
 
-    if (typeof name === 'string' && name.trim()) {
-      updates.name = name.trim();
-    }
-
-    if (typeof description === 'string' && description.trim()) {
-      updates.description = description.trim();
-    }
-
-    if (typeof category === 'string' && category.trim()) {
-      updates.category = category.trim();
-    }
-
-    if (durationMinutes !== undefined) {
-      const parsedDuration = Number(durationMinutes);
-      if (!Number.isFinite(parsedDuration) || parsedDuration < 15) {
-        return res.status(400).json({ message: 'Duration must be at least 15 minutes.' });
-      }
-      updates.durationMinutes = parsedDuration;
-    }
-
-    if (capacity !== undefined) {
-      const parsedCapacity = Number(capacity);
-      if (!Number.isFinite(parsedCapacity) || parsedCapacity < 1) {
-        return res.status(400).json({ message: 'Capacity must be at least 1.' });
-      }
-      updates.capacity = parsedCapacity;
-    }
-
-    if (price !== undefined) {
-      const parsedPrice = Number(price);
-      if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
-        return res.status(400).json({ message: 'Price must be a valid amount.' });
-      }
-      updates.price = parsedPrice;
-    }
-
-    if (typeof active === 'boolean') {
-      updates.active = active;
-    }
+    updates.name = name;
+    updates.description = description;
+    updates.category = category;
+    updates.durationMinutes = durationMinutes;
+    updates.capacity = capacity;
+    updates.price = price;
+    updates.active = active;
 
     if (typeof bookingMode === 'string' && ['self-led', 'instructor-led'].includes(bookingMode)) {
       updates.bookingMode = bookingMode;
@@ -1246,6 +2110,9 @@ app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res)
         name: String(location.name),
         address: String(location.address),
         instructors: Array.isArray(location.instructors) ? location.instructors.map((item) => String(item).trim()).filter(Boolean) : [],
+        timeSlots: Array.isArray(location.timeSlots)
+          ? location.timeSlots.map((item) => String(item).trim()).filter((item) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(item))
+          : [],
       }));
     }
 
@@ -1260,12 +2127,87 @@ app.patch('/api/admin/services/:id', requireAuth, requireAdmin, async (req, res)
   }
 });
 
-app.post('/api/admin/services/:id/overrides', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/admin/instructors', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { date, time, locationId, instructorName } = req.body;
-    if (!date || !time || !locationId || !instructorName) {
-      return res.status(400).json({ message: 'Date, time, location, and instructor are required.' });
+    const { errors, value } = validateInstructorPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
+
+    const services = await listServices(true);
+    const validServiceIds = new Set(services.map((service) => String(service._id)));
+    const validLocationIds = new Set(studioLocations.map((location) => location.id));
+
+    if (value.serviceIds.some((serviceId) => !validServiceIds.has(String(serviceId)))) {
+      return res.status(400).json({ message: 'One or more selected services are invalid.' });
+    }
+
+    if (
+      value.locationIds.some((locationId) => !validLocationIds.has(String(locationId))) ||
+      value.weeklyAvailability.some((block) => !validLocationIds.has(String(block.locationId)))
+    ) {
+      return res.status(400).json({ message: 'One or more selected locations are invalid.' });
+    }
+
+    const existingInstructor = await findInstructorByEmail(value.email);
+    if (existingInstructor) {
+      return res.status(409).json({ message: 'An instructor with that email already exists.' });
+    }
+
+    const instructor = await createInstructor(value);
+    return res.status(201).json(instructor);
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to create the instructor right now.' });
+  }
+});
+
+app.patch('/api/admin/instructors/:id', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { errors, value } = validateInstructorPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const instructor = await findInstructorById(req.params.id);
+    if (!instructor) {
+      return res.status(404).json({ message: 'Instructor not found.' });
+    }
+
+    const services = await listServices(true);
+    const validServiceIds = new Set(services.map((service) => String(service._id)));
+    const validLocationIds = new Set(studioLocations.map((location) => location.id));
+
+    if (value.serviceIds.some((serviceId) => !validServiceIds.has(String(serviceId)))) {
+      return res.status(400).json({ message: 'One or more selected services are invalid.' });
+    }
+
+    if (
+      value.locationIds.some((locationId) => !validLocationIds.has(String(locationId))) ||
+      value.weeklyAvailability.some((block) => !validLocationIds.has(String(block.locationId)))
+    ) {
+      return res.status(400).json({ message: 'One or more selected locations are invalid.' });
+    }
+
+    const existingInstructor = await findInstructorByEmail(value.email);
+    if (existingInstructor && String(existingInstructor._id) !== String(req.params.id)) {
+      return res.status(409).json({ message: 'Another instructor already uses that email.' });
+    }
+
+    const updatedInstructor = await updateInstructorById(req.params.id, value);
+    return res.json(updatedInstructor);
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to update the instructor right now.' });
+  }
+});
+
+app.post('/api/admin/services/:id/overrides', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { errors, value } = validateOverridePayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const { date, time, locationId, instructorName } = value;
 
     const service = databaseReady ? await Service.findById(req.params.id) : memoryServices.find((item) => item._id === req.params.id);
     if (!service) {
@@ -1278,11 +2220,18 @@ app.post('/api/admin/services/:id/overrides', requireAuth, requireAdmin, async (
       return res.status(404).json({ message: 'Location not found for this service.' });
     }
 
-    if (!location.instructors.includes(instructorName)) {
+    const instructorDirectory = await listInstructors(true);
+    const assignedInstructorNames = getAssignedInstructorRecords(
+      shapedService,
+      locationId,
+      instructorDirectory
+    ).map((instructor) => instructor.name);
+
+    if (!assignedInstructorNames.includes(instructorName)) {
       return res.status(400).json({ message: 'That instructor is not assigned to the selected location.' });
     }
 
-    const allowedTimes = generateServiceSlots(shapedService, String(date), locationId).map((slot) => slot.time);
+    const allowedTimes = generateServiceSlots(shapedService, String(date), locationId, instructorDirectory).map((slot) => slot.time);
     if (!allowedTimes.includes(time)) {
       return res.status(400).json({ message: 'That time is not available for this service schedule.' });
     }
@@ -1308,7 +2257,7 @@ app.post('/api/admin/services/:id/overrides', requireAuth, requireAdmin, async (
   }
 });
 
-app.delete('/api/admin/services/:id/overrides/:overrideId', requireAuth, requireAdmin, async (req, res) => {
+app.delete('/api/admin/services/:id/overrides/:overrideId', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
     const service = databaseReady ? await Service.findById(req.params.id) : memoryServices.find((item) => item._id === req.params.id);
     if (!service) {
@@ -1324,7 +2273,7 @@ app.delete('/api/admin/services/:id/overrides/:overrideId', requireAuth, require
   }
 });
 
-app.patch('/api/admin/services/:id/deactivate', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/services/:id/deactivate', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
     const updatedService = await updateServiceById(req.params.id, { active: false });
     if (!updatedService) {
@@ -1334,6 +2283,27 @@ app.patch('/api/admin/services/:id/deactivate', requireAuth, requireAdmin, async
     return res.json(updatedService);
   } catch (error) {
     return res.status(500).json({ message: 'Unable to deactivate the service right now.' });
+  }
+});
+
+app.delete('/api/admin/services/:id', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const service = await findServiceById(req.params.id);
+    if (!service) {
+      return res.status(404).json({ message: 'Service not found.' });
+    }
+
+    const bookingCount = await countBookingsForService(req.params.id);
+    if (bookingCount > 0) {
+      return res.status(409).json({
+        message: 'This service already has booking history. Deactivate it instead of deleting it.',
+      });
+    }
+
+    await deleteServiceById(req.params.id);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to delete the service right now.' });
   }
 });
 
@@ -1355,8 +2325,13 @@ app.get('/api/bookings', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/bookings', requireAuth, async (req, res) => {
+app.post('/api/bookings', bookingLimiter, requireAuth, async (req, res) => {
   try {
+    const { errors, value } = validateBookingPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
     const {
       serviceId,
       bookingDate,
@@ -1365,16 +2340,13 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       instructorName = '',
       notes = '',
       paymentCardholderName = '',
-      paymentCardNumber = '',
+      paymentCardLast4 = '',
+      paymentCardDigitsCount = 0,
       creditBookingId = '',
-    } = req.body;
+    } = value;
 
     if (!req.user.membershipActive) {
       return res.status(403).json({ message: 'Your membership is inactive. Please contact the wellness center.' });
-    }
-
-    if (!serviceId || !bookingDate || !slotTime || !locationId) {
-      return res.status(400).json({ message: 'Please choose a service, location, and time.' });
     }
 
     const service = await findServiceById(serviceId);
@@ -1387,7 +2359,8 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       return res.status(404).json({ message: 'Selected location was not found for this service.' });
     }
 
-    const validSlots = generateServiceSlots(service, String(bookingDate), locationId);
+    const instructorDirectory = await listInstructors(false);
+    const validSlots = generateServiceSlots(service, String(bookingDate), locationId, instructorDirectory);
     const selectedSlot = validSlots.find((slot) => slot.time === slotTime);
     if (!selectedSlot) {
       return res.status(400).json({ message: 'That class time is not available for the selected service.' });
@@ -1436,7 +2409,6 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
 
     const normalizedCreditBookingId = String(creditBookingId || '').trim();
     const normalizedCardholder = String(paymentCardholderName).trim();
-    const digitsOnlyCardNumber = String(paymentCardNumber).replace(/\D/g, '');
     let paymentStatus = 'Paid';
     let paymentAmount = Number(service.price || 0);
     let paymentLast4 = '';
@@ -1472,13 +2444,13 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
       paymentStatus = 'Credit Applied';
       paymentLast4 = creditSourceBooking.paymentLast4 || '';
     } else {
-      if (!normalizedCardholder || digitsOnlyCardNumber.length < 12) {
+      if (!normalizedCardholder || paymentCardLast4.length !== 4 || Number(paymentCardDigitsCount) !== 16) {
         return res.status(400).json({
-          message: 'Please enter a cardholder name and a valid card number to complete checkout.',
+          message: 'Please enter a cardholder name and any 16-digit demo card number to complete checkout.',
         });
       }
 
-      paymentLast4 = digitsOnlyCardNumber.slice(-4);
+      paymentLast4 = paymentCardLast4;
     }
 
     const populatedBooking = databaseReady
@@ -1568,7 +2540,7 @@ app.post('/api/bookings', requireAuth, async (req, res) => {
   }
 });
 
-app.patch('/api/admin/requests/:id', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/requests/:id', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
     const { status } = req.body;
 
@@ -1605,7 +2577,7 @@ app.patch('/api/admin/requests/:id', requireAuth, requireAdmin, async (req, res)
   }
 });
 
-app.patch('/api/admin/bookings/:id/attendance', requireAuth, requireAdmin, async (req, res) => {
+app.patch('/api/admin/bookings/:id/attendance', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
     const { attendanceStatus } = req.body;
 
@@ -1627,7 +2599,6 @@ app.patch('/api/admin/bookings/:id/attendance', requireAuth, requireAdmin, async
       return res.status(400).json({ message: 'Attendance can only be marked after the class start time.' });
     }
 
-    const isOpenGym = isSelfLedService(booking.service);
     const updates = {
       attendanceStatus,
       attendanceMarkedAt: new Date(),
@@ -1636,12 +2607,13 @@ app.patch('/api/admin/bookings/:id/attendance', requireAuth, requireAdmin, async
     };
 
     if (attendanceStatus === 'No-show') {
-      if (isOpenGym) {
-        updates.creditEligible = true;
-        updates.noShowFeeAmount = 0;
-      } else {
-        updates.noShowFeeAmount = roundCurrency(Number(booking.paymentAmount || booking.service?.price || 0) * 0.2);
-      }
+      const outcome = calculateNoShowOutcome({
+        service: booking.service,
+        paymentAmount: booking.paymentAmount,
+        fallbackPrice: booking.service?.price,
+      });
+      updates.creditEligible = outcome.creditEligible;
+      updates.noShowFeeAmount = outcome.noShowFeeAmount;
     }
 
     const updatedBooking = await updateBookingById(req.params.id, updates);
@@ -1651,7 +2623,7 @@ app.patch('/api/admin/bookings/:id/attendance', requireAuth, requireAdmin, async
   }
 });
 
-app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
+app.patch('/api/bookings/:id/cancel', bookingLimiter, requireAuth, async (req, res) => {
   try {
     let booking;
 
@@ -1707,14 +2679,14 @@ app.patch('/api/bookings/:id/cancel', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/reviews', requireAuth, async (req, res) => {
+app.post('/api/reviews', bookingLimiter, requireAuth, async (req, res) => {
   try {
-    const { bookingId, rating, comment = '' } = req.body;
-
-    if (!bookingId || !rating) {
-      return res.status(400).json({ message: 'Booking and rating are required.' });
+    const { errors, value } = validateReviewPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
     }
 
+    const { bookingId, rating, comment = '' } = value;
     const booking = await findBookingById(bookingId);
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found.' });

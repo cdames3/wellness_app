@@ -1,62 +1,105 @@
 # Wellness Center Studio
 
-A full-stack wellness booking platform for members and staff. The app supports public browsing, member scheduling, reviews, admin service management, instructor overrides, attendance tracking, and a styled dashboard experience for both roles.
+Wellness Center Studio is a full-stack wellness booking application built for a school project. It simulates how a modern multi-location wellness business could manage members, classes, services, instructors, reviews, attendance, and day-to-day studio operations in one system.
 
-## Current Stack
+The application includes a public-facing landing page, a member dashboard, and a separate admin operations dashboard. The current build focuses on a polished user experience while also including practical backend rules for scheduling, account protection, attendance tracking, and review management.
 
-- Frontend: React + Vite
-- Backend: Node.js + Express
-- Database: MongoDB + Mongoose
-- Deployment: Render Blueprint via [`render.yaml`](/Users/vitorialima/Documents/GitHub/wellness_app/render.yaml)
+## Project Purpose
 
-## What The App Does
+This project was designed to model a real wellness business with:
 
-### Public Experience
+- multiple studio locations
+- different service types such as pilates, massage, spa, and open gym
+- member accounts and secure login
+- instructor scheduling and availability management
+- booking and payment simulation
+- admin tools for services, staff, attendance, and schedules
 
-- Browse the wellness studio landing page
-- View service cards with live median star ratings from reviews
-- See an editorial preview of the studio offerings
-- Register or log in as a member or admin
+The goal was to create a system that feels believable as a real wellness platform while still being manageable as a course project.
 
-### Member Experience
+## Main User Roles
 
-- Create an account without entering a membership number
-- Receive an auto-generated membership number during registration
-- Log in with either email or membership number
-- Book a class or service using:
-  - real schedule windows per service
-  - studio location selection
-  - instructor selection when applicable
-  - mock checkout during booking
-- View upcoming bookings, past bookings, and no-shows separately
-- Leave reviews for completed bookings
-- Edit profile information, email, and password
-- Use a one-time Open Gym credit after an Open Gym no-show
+### Public Visitor
 
-### Admin Experience
+A visitor can:
 
-- Manage services from a dedicated admin dashboard
-- Create new services
-- Edit service details inline
-- Deactivate services
-- Edit pricing, duration, capacity, and descriptions
-- Manage instructor schedule overrides by date, time, and location
-- View a monthly calendar of upcoming sessions
-- View grouped future sessions and past sessions
-- Confirm attendance after a class has passed
-- Mark a member as a no-show
-- Cancel bookings when needed
+- view the landing page
+- browse service previews
+- see current service ratings
+- register for an account
+- sign in as a member or admin
 
-## Service Scheduling Logic
+### Member
 
-The app currently ships with these default schedule patterns:
+A member can:
 
-- `Open Gym Session`: every 30 minutes from 6:00 AM to 12:00 AM
-- `Pilates Flow`: every 90 minutes from 6:00 AM to 8:00 PM
-- `Deep Tissue Massage`: hourly sessions from 9:00 AM to 6:00 PM
-- `Spa Reset`: every 45 minutes from 10:00 AM to 7:00 PM
+- register without manually entering a membership number
+- receive an automatically generated membership number
+- sign in with either email or membership number
+- verify their email address
+- request a password reset
+- browse services by price, type, and rating
+- choose a location for a booking
+- choose an instructor when applicable
+- choose a live available class or service time
+- complete a demo payment flow during booking
+- view upcoming bookings
+- view past bookings
+- view no-show records and open gym credits
+- leave reviews for completed services
+- update profile details, email, and password
 
-Locations are included for:
+### Admin
+
+An admin can:
+
+- manage services
+- create new services
+- edit services inline
+- deactivate services
+- permanently delete services when allowed
+- manage instructors and their weekly work windows
+- add new instructors to the system
+- view an employee directory
+- see instructor availability
+- create one-time instructor overrides for specific classes
+- view schedules by service, instructor, calendar, and location
+- cancel member bookings when needed
+- mark attendance after a class has passed
+- mark members as no-shows
+
+## Core Application Features
+
+## 1. Authentication and Accounts
+
+The app supports:
+
+- account registration
+- secure login
+- cookie-based session handling
+- email verification
+- forgot-password flow
+- password reset with expiring tokens
+
+Membership numbers are generated automatically at registration time. Emails are normalized to lowercase so members can log in more reliably.
+
+## 2. Booking System
+
+Members can book services through a guided flow:
+
+1. choose a service
+2. choose a location
+3. optionally choose a preferred instructor
+4. choose a valid upcoming time
+5. complete a demo payment step
+
+The system prevents booking past sessions and checks slot capacity before confirming a booking.
+
+Bookings are created as immediately booked rather than waiting for admin approval.
+
+## 3. Location-Based Scheduling
+
+The project supports seven studio locations:
 
 - Atlanta
 - Sandy Springs
@@ -66,63 +109,229 @@ Locations are included for:
 - Roswell
 - Alpharetta
 
-## Booking, Attendance, And No-Show Rules
+Each location can have different instructor coverage and different class times.
 
-- Members can only book future class times
-- Capacity is checked before a booking is created
-- Bookings are created as immediately booked, not pending approval
-- Attendance can only be marked after the session start time has passed
-- If an admin marks a member as `No-show`:
-  - regular classes/services get a demo 20% no-show fee
-  - `Open Gym Session` gets a one-time reschedule credit instead
+Instructor-led services now use smaller, more believable schedules. Instead of showing a class every possible interval all day, each location only offers a limited number of real sessions per day. Each instructor-led class slot is tied to one instructor, which makes the schedule feel more like a real studio with limited rooms and staffing.
 
-## Reviews And Ratings
+Open Gym remains broadly available and uses 30-minute booking intervals, but in the admin location view it is displayed as one clean open-hours block rather than repeated dozens of times.
 
-- Members can review completed bookings
-- Services display a live rounded-up median rating
-- Ratings update automatically as new reviews are submitted
+## 4. Services
 
-## Auth And Session Handling
+The default services included in the app are:
 
-The app now uses cookie-based sessions instead of storing the login token in browser `localStorage`.
+- Pilates Flow
+- Deep Tissue Massage
+- Spa Reset
+- Open Gym Session
 
-- Session cookies are `HttpOnly`
-- Production cookies are configured for secure cross-site usage
-- Sessions are stored in MongoDB when the database is connected
-- Demo mode still uses an in-memory fallback session store for local development
+Each service includes:
 
-This is more secure than the previous browser-stored token approach, but the project still has a few important public-launch improvements left. See `Public Launch Checklist` below.
+- name
+- description
+- category
+- duration
+- capacity
+- price
+- booking mode
+- location availability
+- assigned instructors
+- schedule configuration
+- rating summary
 
-## Demo Mode
+## 5. Instructors and Employee Management
 
-If MongoDB is not available and demo mode is allowed, the backend falls back to local demo data stored under [`backend-auth/data/`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/data).
+The instructor system is a major part of the app.
 
-In non-production development mode, the backend can seed demo accounts:
+Admins can:
+
+- add new instructors
+- edit instructor name, title, bio, email, and phone
+- assign instructors to services
+- assign instructors to locations
+- define weekly work windows
+- use a one-time override to swap coverage for a specific class
+
+The admin instructor page is organized as a two-column workspace so staff management, directory review, and override tools can all be viewed clearly without feeling cluttered.
+
+## 6. Attendance and No-Show Handling
+
+Once a class or service time has passed, the admin can:
+
+- confirm that a member attended
+- mark the member as a no-show
+
+If a member is marked as a no-show:
+
+- regular instructor-led services trigger a demo 20% no-show fee
+- open gym sessions create a one-time reschedule credit instead
+
+Members can view no-show records on their side of the app.
+
+## 7. Reviews and Ratings
+
+Members can leave reviews only for completed bookings.
+
+The app calculates a live service rating summary based on the median of submitted review scores. The median is rounded up so each service card can display a clean star rating and summary line.
+
+This rating appears in the public experience and admin service displays.
+
+## 8. Admin Schedule Views
+
+The admin side includes several ways to understand the schedule:
+
+- service management
+- instructor availability explorer
+- one-time override tools
+- monthly calendar view
+- future sessions
+- past sessions
+- location schedule board
+
+The new locations page lets the admin choose a studio and see that location’s schedule day by day in a cleaner, less cluttered format.
+
+## Payment Behavior
+
+This project uses a demo payment flow for school purposes.
+
+Important notes:
+
+- the checkout does not process real payments
+- any 16-digit number can be used as a demo card
+- the system only stores the last four digits
+- a cardholder name is required for the demo checkout flow
+
+This keeps the project usable for demos without integrating a paid third-party processor.
+
+## Security and Data Protection
+
+The application includes several important protections:
+
+- passwords are hashed before storage
+- cookie-based sessions are used instead of browser-stored auth tokens
+- session cookies are HttpOnly
+- CSRF protection is applied to write requests
+- Helmet security headers are enabled
+- rate limiting protects auth, booking, and admin write actions
+- request validation is used for major payloads
+- password reset tokens expire automatically
+- email verification tokens expire automatically
+- password resets invalidate existing sessions
+
+For demo payments, the system intentionally avoids storing full card numbers.
+
+## Demo Mode and Persistence
+
+When MongoDB is unavailable in development, the backend can fall back to demo mode. In that case, local data is saved under `backend-auth/data/` so demo users and bookings are not lost every time the backend restarts.
+
+In development, demo accounts can be seeded automatically:
 
 - Admin: `admin@wellness.local` / `admin123`
 - Member: `vitoria.test@example.com` / `test1234`
 
-For production, Render is configured to disable demo mode and demo-user seeding by default.
+For production deployment, demo mode and demo-user seeding are disabled by default in the Render configuration.
+
+## Technology Stack
+
+### Frontend
+
+- React 19
+- Vite
+- custom CSS
+
+### Backend
+
+- Node.js
+- Express
+- Mongoose
+- MongoDB
+
+### Security / Utility
+
+- Helmet
+- express-rate-limit
+- dotenv
+- Nodemailer
+
+### Deployment
+
+- Render Blueprint via `render.yaml`
 
 ## Project Structure
 
-- [`frontend`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend): React app
-- [`frontend/src/App.jsx`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend/src/App.jsx): main application UI and client logic
-- [`frontend/src/styles.css`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend/src/styles.css): main styling system
-- [`frontend/src/assets`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend/src/assets): editorial service and hero imagery
-- [`backend-auth`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth): Express API
-- [`backend-auth/models/User.js`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/models/User.js): user model
-- [`backend-auth/models/Service.js`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/models/Service.js): service model
-- [`backend-auth/models/Booking.js`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/models/Booking.js): booking model
-- [`backend-auth/models/Review.js`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/models/Review.js): review model
-- [`backend-auth/models/Session.js`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/models/Session.js): persisted session model
-- [`render.yaml`](/Users/vitorialima/Documents/GitHub/wellness_app/render.yaml): Render deployment blueprint
+```text
+wellness_app/
+├── backend-auth/
+│   ├── data/
+│   ├── lib/
+│   ├── models/
+│   ├── .env.example
+│   ├── package.json
+│   └── server.js
+├── frontend/
+│   ├── src/
+│   │   ├── assets/
+│   │   ├── App.jsx
+│   │   └── styles.css
+│   ├── .env.example
+│   ├── package.json
+│   └── vite.config.js
+├── render.yaml
+└── README.md
+```
 
-## Local Setup
+## Important Files
 
-### 1. Backend
+### Frontend
 
-From [`backend-auth`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth):
+- `frontend/src/App.jsx`
+  Main application component, page switching, dashboard logic, booking flow, and admin interface logic.
+
+- `frontend/src/styles.css`
+  Main styling system for the landing page, member dashboard, and admin dashboard.
+
+- `frontend/src/assets/`
+  Stores the images used throughout the editorial service cards and landing page.
+
+### Backend
+
+- `backend-auth/server.js`
+  Main API server, auth/session logic, service scheduling rules, booking logic, review handling, and admin routes.
+
+- `backend-auth/models/User.js`
+  User schema for members and admins.
+
+- `backend-auth/models/Service.js`
+  Service schema with pricing, capacity, booking mode, locations, schedule, and overrides.
+
+- `backend-auth/models/Instructor.js`
+  Instructor schema with service assignments, location assignments, and weekly availability.
+
+- `backend-auth/models/Booking.js`
+  Booking schema including payment summary, attendance state, and no-show rules.
+
+- `backend-auth/models/Review.js`
+  Review schema for service feedback.
+
+- `backend-auth/models/Session.js`
+  Session storage model for persisted auth sessions.
+
+- `backend-auth/models/AuthToken.js`
+  Verification and password reset token model.
+
+- `backend-auth/lib/validation.js`
+  Shared request validation utilities.
+
+- `backend-auth/lib/business-rules.js`
+  Reusable booking and no-show business logic used by tests.
+
+- `backend-auth/lib/mailer.js`
+  Email delivery helper for verification and password reset flows.
+
+## Local Development Setup
+
+### 1. Start the backend
+
+From `backend-auth`:
 
 ```bash
 npm install
@@ -130,18 +339,18 @@ cp .env.example .env
 npm run dev
 ```
 
-### 2. Frontend
+### 2. Start the frontend
 
-From [`frontend`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend):
+From `frontend`:
 
 ```bash
 npm install
 npm run dev
 ```
 
-### 3. Open The App
+### 3. Open the app
 
-Open the Vite URL shown in the terminal, usually:
+Open the local Vite address shown in the terminal, usually:
 
 ```text
 http://localhost:5173
@@ -151,99 +360,82 @@ http://localhost:5173
 
 ### Backend
 
-Create [`backend-auth/.env`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/.env) from [`backend-auth/.env.example`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/.env.example).
+Create `backend-auth/.env` from `backend-auth/.env.example`.
 
-```env
-NODE_ENV=development
-MONGO_URI=your-mongodb-connection-string
-PORT=5000
-CORS_ORIGINS=http://localhost:5173
-HOST=127.0.0.1
-ALLOW_DEMO_MODE=true
-SEED_DEMO_USERS=true
-SESSION_DURATION_DAYS=7
-ADMIN_NAME=Wellness Admin
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=change-me
-ADMIN_MEMBERSHIP_NUMBER=ADMIN-001
-```
+Important backend variables include:
+
+- `NODE_ENV`
+- `MONGO_URI`
+- `PORT`
+- `CORS_ORIGINS`
+- `HOST`
+- `APP_BASE_URL`
+- `ALLOW_DEMO_MODE`
+- `SEED_DEMO_USERS`
+- `SESSION_DURATION_DAYS`
+- `ADMIN_NAME`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `ADMIN_MEMBERSHIP_NUMBER`
+- `MAIL_FROM`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_SECURE`
+- `SMTP_USER`
+- `SMTP_PASSWORD`
 
 ### Frontend
 
-[`frontend/.env.example`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend/.env.example):
+The frontend supports:
 
-```env
-VITE_API_BASE_URL=http://localhost:5000/api
+- `VITE_API_BASE_URL`
+
+In local development, the app can also run through Vite proxy mode using `/api`.
+
+## Testing
+
+Backend tests can be run with:
+
+```bash
+cd backend-auth
+npm test
 ```
 
-For local development, the project can also run through Vite proxy mode using `/api`.
+Frontend production build can be checked with:
 
-## Render Deployment
+```bash
+cd frontend
+npm run build
+```
 
-This repo includes a Render Blueprint file at [`render.yaml`](/Users/vitorialima/Documents/GitHub/wellness_app/render.yaml).
+## Deployment
 
-### What The Blueprint Creates
+This project includes a Render Blueprint in `render.yaml`.
 
-- `wellness-backend`: Node web service from [`backend-auth`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth)
-- `wellness-frontend`: static site from [`frontend`](/Users/vitorialima/Documents/GitHub/wellness_app/frontend)
+The blueprint creates:
 
-### Production Defaults In The Blueprint
+- `wellness-backend` as a Node web service
+- `wellness-frontend` as a static site
 
-- `NODE_ENV=production`
-- `HOST=0.0.0.0`
-- `ALLOW_DEMO_MODE=false`
-- `SEED_DEMO_USERS=false`
+Production defaults in the blueprint disable demo mode and expect a real MongoDB connection plus real environment variables.
 
-### Render Setup Steps
+General deployment flow:
 
-1. Push this repo to GitHub.
-2. In Render, create a new Blueprint from the repo.
-3. Let Render load [`render.yaml`](/Users/vitorialima/Documents/GitHub/wellness_app/render.yaml).
-4. Set backend secrets:
-   - `MONGO_URI`
-   - `ADMIN_EMAIL`
-   - `ADMIN_PASSWORD`
-5. Once Render gives you URLs, set:
-   - backend `CORS_ORIGINS=https://your-frontend-url.onrender.com`
-   - frontend `VITE_API_BASE_URL=https://your-backend-url.onrender.com/api`
-6. Redeploy both services.
+1. push the repository to GitHub
+2. create a Render Blueprint from the repo
+3. add required backend secrets such as MongoDB and admin credentials
+4. configure the frontend API base URL
+5. redeploy both services
 
-## Public Launch Checklist
+## Notes for School Demo Use
 
-The app is much farther along than an MVP, but it is still not fully production-hardened for public launch. Before opening it to real users, these are the next most important upgrades:
+This project intentionally mixes realistic behavior with a school-demo-friendly setup.
 
-### Highest Priority
+Examples:
 
-- Replace the mock payment flow with a real provider such as Stripe Checkout or Stripe Payment Element
-- Add request validation middleware for auth, bookings, services, and reviews
-- Add rate limiting for login, register, payment, and admin routes
-- Add security middleware such as Helmet
-- Rotate any secrets or database credentials that were ever committed or exposed
+- payment is mocked instead of connected to a live provider
+- demo mode can be used locally when MongoDB is unavailable
+- demo email links can print in the terminal when SMTP is not configured
+- seeded demo accounts make it easier to demonstrate both member and admin workflows
 
-### Strongly Recommended
-
-- Add automated tests for auth, booking capacity, attendance, and admin permissions
-- Add password reset and email verification flows
-- Add structured server logging and monitoring
-- Compress and optimize the large frontend images before launch
-- Consider moving from the current custom session handling to a more fully managed production auth/session strategy as the app grows
-
-## Current Known Limitations
-
-- Payments are demo-only right now
-- Demo mode is helpful for development, but it should stay disabled in production
-- Frontend images are currently heavy and should be optimized
-- There are no automated tests yet
-
-## Git And Repo Safety Notes
-
-- `node_modules` should never be committed
-- `.env` files should never be committed
-- local demo persistence under [`backend-auth/data/`](/Users/vitorialima/Documents/GitHub/wellness_app/backend-auth/data) is ignored by git
-
-## Verification
-
-At the current checkpoint:
-
-- frontend build passes with `npm run build`
-- backend syntax check passes with `node -c backend-auth/server.js`
+Even with those demo conveniences, the project still includes real architectural ideas such as session-based auth, role-based access control, validation, attendance handling, instructor scheduling, and multi-location booking logic.

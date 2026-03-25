@@ -21,6 +21,10 @@ const serviceLocationSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    timeSlots: {
+      type: [String],
+      default: [],
+    },
   },
   { _id: false }
 );

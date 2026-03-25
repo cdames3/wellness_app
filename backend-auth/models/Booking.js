@@ -77,11 +77,6 @@ const bookingSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
-    paymentCardholderName: {
-      type: String,
-      trim: true,
-      default: '',
-    },
     paymentLast4: {
       type: String,
       trim: true,
