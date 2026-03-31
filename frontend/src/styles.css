@@ -64,7 +64,7 @@ button {
 }
 
 .app-shell.admin-expanded-shell {
-  max-width: 1540px;
+  max-width: 1620px;
 }
 
 .app-shell.admin-shell .dashboard-topbar h1 {
@@ -197,6 +197,66 @@ button {
 
 .member-nav-button:hover {
   transform: translateY(-1px);
+}
+
+.admin-workspace-toolbar {
+  display: grid;
+  gap: 18px;
+}
+
+.admin-workspace-topline {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.admin-workspace-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.admin-workspace-field {
+  display: grid;
+  gap: 8px;
+  min-width: 240px;
+}
+
+.admin-workspace-field span {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(248, 237, 220, 0.74);
+}
+
+.admin-workspace-field select {
+  min-height: 56px;
+  padding: 0 18px;
+  border-radius: 20px;
+  border: 1px solid rgba(214, 174, 108, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f7eddc;
+}
+
+.admin-workspace-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.admin-workspace-stat-card {
+  min-height: 0;
+}
+
+.admin-workspace-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  align-items: start;
 }
 
 .hero-topline,
@@ -1864,6 +1924,7 @@ button {
   .schedule-session-grid,
   .admin-summary,
   .admin-stack,
+  .admin-workspace-stats,
   .member-summary-grid,
   .about-highlights,
   .form-grid-two,
@@ -1871,7 +1932,17 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .admin-workspace-topline,
+  .admin-workspace-controls {
+    align-items: stretch;
+  }
+
+  .admin-workspace-field {
+    min-width: min(100%, 320px);
+  }
+
   .availability-row,
+  .admin-workspace-columns,
   .instructor-page-columns,
   .compact-employee-grid {
     grid-template-columns: 1fr;

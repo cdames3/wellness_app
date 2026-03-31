@@ -500,6 +500,10 @@ export default function App() {
   const [authChecking, setAuthChecking] = useState(true);
   const [memberPage, setMemberPage] = useState('book');
   const [adminPage, setAdminPage] = useState('services');
+  const [adminServicesView, setAdminServicesView] = useState('overview');
+  const [adminLocationsView, setAdminLocationsView] = useState('directory');
+  const [adminInstructorsView, setAdminInstructorsView] = useState('overview');
+  const [adminScheduleView, setAdminScheduleView] = useState('overview');
   const [services, setServices] = useState([]);
   const [adminServices, setAdminServices] = useState([]);
   const [instructors, setInstructors] = useState([]);
@@ -720,8 +724,21 @@ export default function App() {
   useEffect(() => {
     if (user?.role === 'admin') {
       setAdminPage('services');
+      setAdminServicesView('overview');
+      setAdminLocationsView('directory');
+      setAdminInstructorsView('overview');
+      setAdminScheduleView('overview');
     }
   }, [user?._id, user?.role]);
+
+  useEffect(() => {
+    const nextShowAuth = !user || view !== 'app';
+    if (nextShowAuth) {
+      return;
+    }
+
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [user, view, memberPage, adminPage, adminServicesView, adminLocationsView, adminInstructorsView, adminScheduleView]);
 
   useEffect(() => {
     if (!message && !error) {
@@ -1748,6 +1765,13 @@ export default function App() {
   )
     .slice()
     .sort((left, right) => new Date(right.appointmentDate) - new Date(left.appointmentDate));
+  const pendingAttendanceCount = adminCompletedSessions.reduce(
+    (total, session) =>
+      total + session.bookings.filter((booking) => booking.attendanceStatus === 'Scheduled').length,
+    0
+  );
+  const nextUpcomingAdminSession = adminUpcomingSessions[0] || null;
+  const latestCompletedAdminSession = adminCompletedSessions[0] || null;
   const serviceRatingsById = buildServiceRatingMap(reviews);
   const locationCount = new Set(
     services.flatMap((service) => (service.locations || []).map((location) => location.id || location.name))
@@ -1832,15 +1856,83 @@ export default function App() {
     { id: 'instructors', label: 'Instructors' },
     { id: 'schedule', label: 'Schedule' },
   ];
+  const adminWorkspaceConfig = {
+    services: {
+      kicker: 'Services Workspace',
+      title: 'Choose one service task at a time',
+      description: 'Switch between the live lineup, new-service setup, and catalog editing without stretching the whole page.',
+      value: adminServicesView,
+      setValue: setAdminServicesView,
+      options: [
+        { id: 'overview', label: 'Live lineup' },
+        { id: 'create', label: 'Create service' },
+        { id: 'catalog', label: 'Service catalog' },
+      ],
+      stats: [
+        { label: 'Booked', value: activeAdminBookings.length },
+        { label: 'Today', value: todayAdminBookings.length },
+        { label: 'Cancelled', value: cancelledAdminBookings.length },
+      ],
+    },
+    locations: {
+      kicker: 'Locations Workspace',
+      title: 'Move between the directory and local teaching board',
+      description: 'Keep the studio list compact, then jump into one selected location whenever you want its weekly teaching picture.',
+      value: adminLocationsView,
+      setValue: setAdminLocationsView,
+      options: [
+        { id: 'directory', label: 'Location directory' },
+        { id: 'schedule', label: 'Location schedule' },
+      ],
+      stats: [
+        { label: 'Studios', value: allAdminLocations.length },
+        { label: 'Live services', value: adminServices.filter((service) => service.active !== false).length },
+        { label: 'Active instructors', value: adminInstructors.filter((instructor) => instructor.active !== false).length },
+      ],
+    },
+    instructors: {
+      kicker: 'Instructor Workspace',
+      title: 'Keep the team tools focused',
+      description: 'Use one selector to move between the roster, employee editor, availability lookup, and one-time coverage changes.',
+      value: adminInstructorsView,
+      setValue: setAdminInstructorsView,
+      options: [
+        { id: 'overview', label: 'Team overview' },
+        { id: 'editor', label: 'Employee editor' },
+        { id: 'availability', label: 'Availability lookup' },
+        { id: 'coverage', label: 'Coverage changes' },
+      ],
+      stats: [
+        { label: 'Team members', value: adminInstructors.length },
+        { label: 'Bookable', value: adminInstructors.filter((instructor) => instructor.active !== false).length },
+        { label: 'Locations covered', value: new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size },
+      ],
+    },
+    schedule: {
+      kicker: 'Schedule Workspace',
+      title: 'Switch between overview, calendar, and attendance views',
+      description: 'Keep the monthly view, upcoming classes, and completed attendance review in one page without stacking everything at once.',
+      value: adminScheduleView,
+      setValue: setAdminScheduleView,
+      options: [
+        { id: 'overview', label: 'Overview' },
+        { id: 'calendar', label: 'Monthly calendar' },
+        { id: 'upcoming', label: 'Future classes' },
+        { id: 'completed', label: 'Past classes' },
+      ],
+      stats: [
+        { label: 'Today', value: todayAdminBookings.length },
+        { label: 'Attended', value: attendedAdminBookings.length },
+        { label: 'Needs review', value: pendingAttendanceCount },
+      ],
+    },
+  };
+  const activeAdminWorkspace = adminWorkspaceConfig[adminPage];
   const activeNotice = error
     ? { type: 'error', title: 'Something went wrong', text: error }
     : message
       ? { type: 'success', title: 'Done', text: message }
       : null;
-
-  useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [showAuth]);
 
   useEffect(() => {
     if (allAdminLocations.length === 0) {
@@ -1875,7 +1967,7 @@ export default function App() {
   return (
     <div
       className={`app-shell${!showAuth && isAdmin ? ' admin-shell' : ''}${
-        !showAuth && isAdmin && (adminPage === 'instructors' || adminPage === 'locations') ? ' admin-expanded-shell' : ''
+        !showAuth && isAdmin ? ' admin-expanded-shell' : ''
       }`}
     >
       {showAuth ? (
@@ -1988,6 +2080,61 @@ export default function App() {
               <button type="button" className="secondary-button" onClick={handleRequestVerification} disabled={profileLoading}>
                 {profileLoading ? 'Sending...' : 'Send verification email'}
               </button>
+            </section>
+          ) : null}
+
+          {isAdmin && activeAdminWorkspace ? (
+            <section className="panel panel-emphasis bookings-panel admin-workspace-toolbar">
+              <div className="admin-workspace-topline">
+                <div>
+                  <p className="panel-kicker">{activeAdminWorkspace.kicker}</p>
+                  <h2>{activeAdminWorkspace.title}</h2>
+                  <p className="section-copy">{activeAdminWorkspace.description}</p>
+                </div>
+                <div className="admin-workspace-controls">
+                  <label className="admin-workspace-field">
+                    <span>Workspace section</span>
+                    <select
+                      value={activeAdminWorkspace.value}
+                      onChange={(event) => activeAdminWorkspace.setValue(event.target.value)}
+                    >
+                      {activeAdminWorkspace.options.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {adminPage === 'locations' && adminLocationsView === 'schedule' ? (
+                    <label className="admin-workspace-field">
+                      <span>Selected location</span>
+                      <select
+                        value={selectedAdminLocationId}
+                        onChange={(event) => setSelectedAdminLocationId(event.target.value)}
+                      >
+                        {allAdminLocations.map((location) => (
+                          <option key={location.id} value={location.id}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  {adminPage === 'schedule' ? (
+                    <button type="button" className="secondary-button" onClick={loadBookings}>
+                      Refresh schedule
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="admin-workspace-stats">
+                {activeAdminWorkspace.stats.map((stat) => (
+                  <article key={stat.label} className="summary-card admin-workspace-stat-card">
+                    <strong>{stat.value}</strong>
+                    <span>{stat.label}</span>
+                  </article>
+                ))}
+              </div>
             </section>
           ) : null}
         </>
@@ -2242,89 +2389,75 @@ export default function App() {
             <>
               {adminPage === 'services' ? (
                 <>
-                  <section className="panel bookings-panel">
-                    <div className="panel-heading">
-                      <p className="panel-kicker">Service Menu</p>
-                      <h2>Available Services</h2>
-                    </div>
-                    <p className="section-copy">Review the live service lineup, pricing, and studio categories at a glance.</p>
+                  {adminServicesView === 'overview' ? (
+                    <section className="panel bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Service Menu</p>
+                        <h2>Available Services</h2>
+                      </div>
+                      <p className="section-copy">Review the live service lineup, pricing, and studio categories at a glance.</p>
 
-                    {loadingServices ? (
-                      <p>Loading services...</p>
-                    ) : (
-                      <div className="service-gallery admin-service-gallery">
-                        {services.map((service) => {
-                          const presentation = getServicePresentation(service);
-                          const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
-                          return (
-                            <article key={service._id} className="service-showcase-card admin-service-showcase-card">
-                              <div className="service-showcase-visual admin-service-showcase-visual">
-                                <img src={presentation.image || coverPicture} alt={service.name} />
-                              </div>
-                              <div className="service-showcase-copy">
-                                <p className="service-showcase-kicker">{presentation.eyebrow}</p>
-                                <h3 className="admin-service-title">{service.name}</h3>
-                                <div className="service-showcase-meta">
-                                  <span>{service.category}</span>
-                                  <strong>{formatPrice(service.price)}</strong>
+                      {loadingServices ? (
+                        <p>Loading services...</p>
+                      ) : (
+                        <div className="service-gallery admin-service-gallery">
+                          {services.map((service) => {
+                            const presentation = getServicePresentation(service);
+                            const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
+                            return (
+                              <article key={service._id} className="service-showcase-card admin-service-showcase-card">
+                                <div className="service-showcase-visual admin-service-showcase-visual">
+                                  <img src={presentation.image || coverPicture} alt={service.name} />
                                 </div>
-                                <div className="service-rating">
-                                  <strong>{ratingSummary.stars}</strong>
-                                  <span>{ratingSummary.label}</span>
+                                <div className="service-showcase-copy">
+                                  <p className="service-showcase-kicker">{presentation.eyebrow}</p>
+                                  <h3 className="admin-service-title">{service.name}</h3>
+                                  <div className="service-showcase-meta">
+                                    <span>{service.category}</span>
+                                    <strong>{formatPrice(service.price)}</strong>
+                                  </div>
+                                  <div className="service-rating">
+                                    <strong>{ratingSummary.stars}</strong>
+                                    <span>{ratingSummary.label}</span>
+                                  </div>
+                                  <p>{presentation.blurb}</p>
+                                  <div className="service-meta">
+                                    <span>{service.durationMinutes} min</span>
+                                    <span>{service.capacity} spots per slot</span>
+                                    <span>{isSelfLedService(service) ? 'Self-led session' : 'Instructor-led class'}</span>
+                                  </div>
                                 </div>
-                                <p>{presentation.blurb}</p>
-                                <div className="service-meta">
-                                  <span>{service.durationMinutes} min</span>
-                                  <span>{service.capacity} spots per slot</span>
-                                  <span>{isSelfLedService(service) ? 'Self-led session' : 'Instructor-led class'}</span>
-                                </div>
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </section>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </section>
+                  ) : null}
 
-                  <section className="panel panel-emphasis bookings-panel">
-                    <div className="panel-heading">
-                      <p className="panel-kicker">Operations</p>
-                      <h2>Admin Controls</h2>
-                    </div>
-                    <p className="section-copy">Create new services up top, then edit, deactivate, or permanently remove each existing service inline below.</p>
-                    <div className="admin-summary">
-                      <div className="summary-card">
-                        <strong>{activeAdminBookings.length}</strong>
-                        <span>Booked</span>
-                      </div>
-                      <div className="summary-card">
-                        <strong>{todayAdminBookings.length}</strong>
-                        <span>Today</span>
-                      </div>
-                      <div className="summary-card">
-                        <strong>{cancelledAdminBookings.length}</strong>
-                        <span>Cancelled</span>
-                      </div>
-                    </div>
-                    <div className="member-stack admin-stack">
-                      <div>
+                  {adminServicesView === 'create' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Operations</p>
                         <h2>Create a New Service</h2>
-                        <p className="section-copy">Add a fresh service to the booking menu with its duration, price, and capacity.</p>
-                        <form className="booking-form" onSubmit={handleServiceSubmit}>
-                          <label>
-                            Service name
-                            <input name="name" value={serviceForm.name} onChange={updateForm(setServiceForm)} required />
-                          </label>
-                          <label>
-                            Description
-                            <textarea
-                              name="description"
-                              value={serviceForm.description}
-                              onChange={updateForm(setServiceForm)}
-                              rows="4"
-                              required
-                            />
-                          </label>
+                      </div>
+                      <p className="section-copy">Add a fresh service to the booking menu with its duration, price, capacity, and active status.</p>
+                      <form className="booking-form" onSubmit={handleServiceSubmit}>
+                        <label>
+                          Service name
+                          <input name="name" value={serviceForm.name} onChange={updateForm(setServiceForm)} required />
+                        </label>
+                        <label>
+                          Description
+                          <textarea
+                            name="description"
+                            value={serviceForm.description}
+                            onChange={updateForm(setServiceForm)}
+                            rows="4"
+                            required
+                          />
+                        </label>
+                        <div className="form-grid-two">
                           <label>
                             Category
                             <input name="category" value={serviceForm.category} onChange={updateForm(setServiceForm)} required />
@@ -2363,32 +2496,38 @@ export default function App() {
                               required
                             />
                           </label>
-                          <label className="checkbox-row">
-                            <input
-                              name="active"
-                              type="checkbox"
-                              checked={serviceForm.active}
-                              onChange={(event) =>
-                                setServiceForm((current) => ({ ...current, active: event.target.checked }))
-                              }
-                            />
-                            Service is active
-                          </label>
-                          <div className="admin-actions">
-                            <button type="submit" disabled={serviceLoading}>
-                              {serviceLoading ? 'Saving...' : 'Create service'}
-                            </button>
-                          </div>
-                        </form>
-                      </div>
+                        </div>
+                        <label className="checkbox-row">
+                          <input
+                            name="active"
+                            type="checkbox"
+                            checked={serviceForm.active}
+                            onChange={(event) =>
+                              setServiceForm((current) => ({ ...current, active: event.target.checked }))
+                            }
+                          />
+                          Service is active
+                        </label>
+                        <div className="admin-actions">
+                          <button type="submit" disabled={serviceLoading}>
+                            {serviceLoading ? 'Saving...' : 'Create service'}
+                          </button>
+                        </div>
+                      </form>
+                    </section>
+                  ) : null}
 
-                      <div>
+                  {adminServicesView === 'catalog' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Catalog</p>
                         <h2>Service Catalog</h2>
-                        <p className="section-copy">Use each card below to edit pricing, capacity, descriptions, or active status without leaving the list.</p>
-                        <div className="service-list">
-                          {adminServices.map((service) => {
-                            const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
-                            return (
+                      </div>
+                      <p className="section-copy">Edit pricing, capacity, descriptions, or active status without leaving the list.</p>
+                      <div className="service-list">
+                        {adminServices.map((service) => {
+                          const ratingSummary = getMedianRatingSummary(serviceRatingsById[String(service._id)]);
+                          return (
                             <article key={service._id} className="service-card">
                               <div className="service-card-header">
                                 <h3>{service.name}</h3>
@@ -2518,243 +2657,283 @@ export default function App() {
                                 </button>
                               </div>
                             </article>
-                          )})}
-                        </div>
+                          );
+                        })}
                       </div>
-                    </div>
-                  </section>
+                    </section>
+                  ) : null}
                 </>
               ) : null}
 
               {adminPage === 'locations' ? (
                 <>
-                  <section className="panel panel-emphasis bookings-panel">
-                    <div className="panel-heading">
-                      <p className="panel-kicker">Studio Map</p>
-                      <h2>Locations</h2>
-                    </div>
-                    <p className="section-copy">Keep every studio address, local service mix, and teaching footprint in one place before you review the live schedule.</p>
-                    <div className="location-selector-grid">
-                      {allAdminLocations.map((location) => {
-                        const servicesAtLocation = adminServices.filter((service) =>
-                          (service.locations || []).some((serviceLocation) => serviceLocation.id === location.id)
-                        );
-                        const instructorsAtLocation = adminInstructors.filter(
-                          (instructor) =>
-                            instructor.active !== false &&
-                            (instructor.locationIds || []).map(String).includes(String(location.id))
-                        );
-
-                        return (
-                          <button
-                            key={location.id}
-                            type="button"
-                            className={`location-selector-card${selectedAdminLocation?.id === location.id ? ' active' : ''}`}
-                            onClick={() => setSelectedAdminLocationId(location.id)}
-                          >
-                            <div className="location-selector-topline">
-                              <h3>{location.name}</h3>
-                              <span>{selectedAdminLocation?.id === location.id ? 'Viewing' : 'Select'}</span>
-                            </div>
-                            <p className="location-selector-address">{location.address}</p>
-                            <div className="location-selector-stats">
-                              <span>{servicesAtLocation.length} services</span>
-                              <span>{instructorsAtLocation.length} instructors</span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </section>
-
-                  <section className="panel bookings-panel">
-                    <div className="location-schedule-header">
-                      <div>
-                        <p className="panel-kicker">Location Schedule</p>
-                        <h2>{selectedAdminLocation ? `${selectedAdminLocation.name} Weekly Teaching Board` : 'Select a location'}</h2>
-                        <p className="section-copy">
-                          {selectedAdminLocation
-                            ? `${selectedAdminLocation.address}. Review the next seven days of classes, instructors, and session times in one clean schedule view.`
-                            : 'Choose a location above to review its upcoming weekly schedule.'}
-                        </p>
+                  {adminLocationsView === 'directory' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Studio Map</p>
+                        <h2>Locations</h2>
                       </div>
-                    </div>
+                      <p className="section-copy">Keep every studio address, local service mix, and teaching footprint in one place before you review the live schedule.</p>
+                      <div className="location-selector-grid">
+                        {allAdminLocations.map((location) => {
+                          const servicesAtLocation = adminServices.filter((service) =>
+                            (service.locations || []).some((serviceLocation) => serviceLocation.id === location.id)
+                          );
+                          const instructorsAtLocation = adminInstructors.filter(
+                            (instructor) =>
+                              instructor.active !== false &&
+                              (instructor.locationIds || []).map(String).includes(String(location.id))
+                          );
 
-                    {selectedAdminLocation ? (
-                      <div className="location-schedule-grid">
-                        {locationScheduleDays.map((day) => (
-                          <article key={day.key} className="location-day-card">
-                            <div className="location-day-header">
-                              <div>
-                                <h3>{day.weekday}</h3>
-                                <span>{day.dateLabel}</span>
+                          return (
+                            <button
+                              key={location.id}
+                              type="button"
+                              className={`location-selector-card${selectedAdminLocation?.id === location.id ? ' active' : ''}`}
+                              onClick={() => setSelectedAdminLocationId(location.id)}
+                            >
+                              <div className="location-selector-topline">
+                                <h3>{location.name}</h3>
+                                <span>{selectedAdminLocation?.id === location.id ? 'Viewing' : 'Select'}</span>
                               </div>
-                              <strong>{day.entries.length} session{day.entries.length === 1 ? '' : 's'}</strong>
-                            </div>
-                            {day.entries.length > 0 ? (
-                              <div className="location-session-list">
-                                {day.entries.map((entry) => (
-                                  <article key={entry.key} className="location-session-row">
-                                    <div className="location-session-meta">
-                                      <span>{entry.timeLabel}</span>
-                                      <span>{entry.category}</span>
-                                    </div>
-                                    <strong>{entry.serviceName}</strong>
-                                    <p className="location-session-instructor">
-                                      {entry.bookingMode === 'self-led'
-                                        ? entry.detailLabel
-                                        : `Teaching: ${entry.instructorNames.join(', ')}`}
-                                    </p>
-                                  </article>
-                                ))}
+                              <p className="location-selector-address">{location.address}</p>
+                              <div className="location-selector-stats">
+                                <span>{servicesAtLocation.length} services</span>
+                                <span>{instructorsAtLocation.length} instructors</span>
                               </div>
-                            ) : (
-                              <p className="section-copy">No classes scheduled for this location on that day.</p>
-                            )}
-                          </article>
-                        ))}
+                            </button>
+                          );
+                        })}
                       </div>
-                    ) : (
-                      <p className="section-copy">No studio locations are available yet.</p>
-                    )}
-                  </section>
+                    </section>
+                  ) : null}
+
+                  {adminLocationsView === 'schedule' ? (
+                    <section className="panel bookings-panel">
+                      <div className="location-schedule-header">
+                        <div>
+                          <p className="panel-kicker">Location Schedule</p>
+                          <h2>{selectedAdminLocation ? `${selectedAdminLocation.name} Weekly Teaching Board` : 'Select a location'}</h2>
+                          <p className="section-copy">
+                            {selectedAdminLocation
+                              ? `${selectedAdminLocation.address}. Review the next seven days of classes, instructors, and session times in one clean schedule view.`
+                              : 'Choose a location above to review its upcoming weekly schedule.'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {selectedAdminLocation ? (
+                        <>
+                          <div className="booking-insight-row">
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Address</strong>
+                              <span>{selectedAdminLocation.address}</span>
+                            </article>
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Services here</strong>
+                              <span>
+                                {adminServices.filter((service) =>
+                                  (service.locations || []).some((location) => location.id === selectedAdminLocation.id)
+                                ).length} live services
+                              </span>
+                            </article>
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Instructors here</strong>
+                              <span>
+                                {adminInstructors.filter(
+                                  (instructor) =>
+                                    instructor.active !== false &&
+                                    (instructor.locationIds || []).map(String).includes(String(selectedAdminLocation.id))
+                                ).length} active instructors
+                              </span>
+                            </article>
+                          </div>
+                          <div className="location-schedule-grid">
+                            {locationScheduleDays.map((day) => (
+                              <article key={day.key} className="location-day-card">
+                                <div className="location-day-header">
+                                  <div>
+                                    <h3>{day.weekday}</h3>
+                                    <span>{day.dateLabel}</span>
+                                  </div>
+                                  <strong>{day.entries.length} session{day.entries.length === 1 ? '' : 's'}</strong>
+                                </div>
+                                {day.entries.length > 0 ? (
+                                  <div className="location-session-list">
+                                    {day.entries.map((entry) => (
+                                      <article key={entry.key} className="location-session-row">
+                                        <div className="location-session-meta">
+                                          <span>{entry.timeLabel}</span>
+                                          <span>{entry.category}</span>
+                                        </div>
+                                        <strong>{entry.serviceName}</strong>
+                                        <p className="location-session-instructor">
+                                          {entry.bookingMode === 'self-led'
+                                            ? entry.detailLabel
+                                            : `Teaching: ${entry.instructorNames.join(', ')}`}
+                                        </p>
+                                      </article>
+                                    ))}
+                                  </div>
+                                ) : (
+                                  <p className="section-copy">No classes scheduled for this location on that day.</p>
+                                )}
+                              </article>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <p className="section-copy">No studio locations are available yet.</p>
+                      )}
+                    </section>
+                  ) : null}
                 </>
               ) : null}
 
               {adminPage === 'instructors' ? (
-                <section className="panel panel-emphasis bookings-panel">
-                  <div className="panel-heading">
-                    <p className="panel-kicker">Instructor Team</p>
-                    <h2>Employee Overview & Availability</h2>
-                  </div>
-                  <p className="section-copy">Manage employee details, decide when instructors work, and make one-time coverage changes without losing sight of the wider team schedule.</p>
-                  <div className="instructor-page-columns">
-                    <div className="instructor-page-column">
-                      <div className="panel inset-panel instructor-summary-panel">
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Team Snapshot</p>
-                          <h2>Instructor Team</h2>
-                        </div>
-                        <p className="section-copy">Keep the team roster, active coverage, and multi-location staffing in view before you make schedule changes.</p>
-                        <div className="booking-insight-row">
-                          <article className="booking-helper-card booking-helper-card-compact">
-                            <strong>Team members</strong>
-                            <span>{adminInstructors.length} instructors in the directory</span>
-                          </article>
-                          <article className="booking-helper-card booking-helper-card-compact">
-                            <strong>Active coverage</strong>
-                            <span>
-                              {adminInstructors.filter((instructor) => instructor.active !== false).length} currently bookable instructors
-                            </span>
-                          </article>
-                          <article className="booking-helper-card booking-helper-card-compact">
-                            <strong>Locations covered</strong>
-                            <span>
-                              {new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size} studio locations
-                            </span>
-                          </article>
-                        </div>
+                <>
+                  {adminInstructorsView === 'overview' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Instructor Team</p>
+                        <h2>Employee Overview & Availability</h2>
                       </div>
-
-                      <div className="panel inset-panel instructor-directory-panel">
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Directory</p>
-                          <h2>Employee Overview</h2>
+                      <p className="section-copy">Keep the team snapshot and employee directory in one calm view before you make staffing changes.</p>
+                      <div className="instructor-page-columns">
+                        <div className="panel inset-panel instructor-summary-panel">
+                          <div className="panel-heading compact-heading">
+                            <p className="panel-kicker">Team Snapshot</p>
+                            <h2>Instructor Team</h2>
+                          </div>
+                          <p className="section-copy">Keep the roster, active coverage, and multi-location staffing in view before you make schedule changes.</p>
+                          <div className="booking-insight-row">
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Team members</strong>
+                              <span>{adminInstructors.length} instructors in the directory</span>
+                            </article>
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Active coverage</strong>
+                              <span>
+                                {adminInstructors.filter((instructor) => instructor.active !== false).length} currently bookable instructors
+                              </span>
+                            </article>
+                            <article className="booking-helper-card booking-helper-card-compact">
+                              <strong>Locations covered</strong>
+                              <span>
+                                {new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size} studio locations
+                              </span>
+                            </article>
+                          </div>
                         </div>
-                        <p className="section-copy">Review the whole employee roster, current assignments, and weekly work windows without leaving the instructor workspace.</p>
-                        <div className="employee-overview-grid compact-employee-grid">
-                          {adminInstructors.map((instructor) => {
-                            const instructorServices = adminServices.filter((service) =>
-                              (instructor.serviceIds || []).map(String).includes(String(service._id))
-                            );
-                            const instructorLocations = allAdminLocations.filter((location) =>
-                              (instructor.locationIds || []).includes(location.id)
-                            );
 
-                            return (
-                              <article key={instructor._id} className="service-card employee-card">
-                                <div className="service-card-header">
-                                  <h3>{instructor.name}</h3>
-                                  <span>{instructor.active !== false ? 'Active' : 'Inactive'}</span>
-                                </div>
-                                <p className="employee-title">{instructor.title}</p>
-                                <p>{instructor.bio}</p>
-                                <div className="employee-meta">
-                                  <span>{instructor.email}</span>
-                                  <span>{instructor.phone}</span>
-                                </div>
-                                <div className="tag-list">
-                                  {instructorServices.map((service) => (
-                                    <span key={service._id} className="tag-chip">
-                                      {service.name}
-                                    </span>
-                                  ))}
-                                </div>
-                                <div className="tag-list">
-                                  {instructorLocations.map((location) => (
-                                    <span key={location.id} className="tag-chip tag-chip-muted">
-                                      {location.name}
-                                    </span>
-                                  ))}
-                                </div>
-                                <div className="employee-availability-list">
-                                  {(instructor.weeklyAvailability || []).slice(0, 4).map((block, index) => {
-                                    const locationName =
-                                      allAdminLocations.find((location) => location.id === block.locationId)?.name || block.locationId;
-                                    const dayLabel =
-                                      weekdayOptions.find((day) => day.value === Number(block.dayOfWeek))?.label || 'Day';
-                                    return (
-                                      <span key={`${block.locationId}-${block.dayOfWeek}-${index}`}>
-                                        {dayLabel} · {locationName} · {formatTimeLabel(block.startTime)} - {formatTimeLabel(block.endTime)}
+                        <div className="panel inset-panel instructor-directory-panel">
+                          <div className="panel-heading compact-heading">
+                            <p className="panel-kicker">Directory</p>
+                            <h2>Employee Overview</h2>
+                          </div>
+                          <p className="section-copy">Review the whole employee roster, current assignments, and weekly work windows without leaving the instructor workspace.</p>
+                          <div className="employee-overview-grid compact-employee-grid">
+                            {adminInstructors.map((instructor) => {
+                              const instructorServices = adminServices.filter((service) =>
+                                (instructor.serviceIds || []).map(String).includes(String(service._id))
+                              );
+                              const instructorLocations = allAdminLocations.filter((location) =>
+                                (instructor.locationIds || []).includes(location.id)
+                              );
+
+                              return (
+                                <article key={instructor._id} className="service-card employee-card">
+                                  <div className="service-card-header">
+                                    <h3>{instructor.name}</h3>
+                                    <span>{instructor.active !== false ? 'Active' : 'Inactive'}</span>
+                                  </div>
+                                  <p className="employee-title">{instructor.title}</p>
+                                  <p>{instructor.bio}</p>
+                                  <div className="employee-meta">
+                                    <span>{instructor.email}</span>
+                                    <span>{instructor.phone}</span>
+                                  </div>
+                                  <div className="tag-list">
+                                    {instructorServices.map((service) => (
+                                      <span key={service._id} className="tag-chip">
+                                        {service.name}
                                       </span>
-                                    );
-                                  })}
-                                  {(instructor.weeklyAvailability || []).length > 4 ? (
-                                    <span>+{instructor.weeklyAvailability.length - 4} more availability windows</span>
-                                  ) : null}
-                                </div>
-                                <div className="admin-actions">
-                                  <button type="button" onClick={() => startEditingInstructor(instructor)}>
-                                    {editingInstructorId === instructor._id ? 'Close editor' : 'Edit employee'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="secondary-button"
-                                    onClick={() => {
-                                      const firstService = adminServices.find((service) =>
-                                        (instructor.serviceIds || []).map(String).includes(String(service._id))
+                                    ))}
+                                  </div>
+                                  <div className="tag-list">
+                                    {instructorLocations.map((location) => (
+                                      <span key={location.id} className="tag-chip tag-chip-muted">
+                                        {location.name}
+                                      </span>
+                                    ))}
+                                  </div>
+                                  <div className="employee-availability-list">
+                                    {(instructor.weeklyAvailability || []).slice(0, 4).map((block, index) => {
+                                      const locationName =
+                                        allAdminLocations.find((location) => location.id === block.locationId)?.name || block.locationId;
+                                      const dayLabel =
+                                        weekdayOptions.find((day) => day.value === Number(block.dayOfWeek))?.label || 'Day';
+                                      return (
+                                        <span key={`${block.locationId}-${block.dayOfWeek}-${index}`}>
+                                          {dayLabel} · {locationName} · {formatTimeLabel(block.startTime)} - {formatTimeLabel(block.endTime)}
+                                        </span>
                                       );
-                                      const firstLocation =
-                                        (firstService?.locations || []).find((location) =>
-                                          (instructor.locationIds || []).includes(location.id)
-                                        ) || firstService?.locations?.[0];
-                                      setOverrideForm({
-                                        serviceId: firstService?._id || '',
-                                        date: '',
-                                        locationId: firstLocation?.id || '',
-                                        time: '',
-                                        instructorName: instructor.name,
-                                      });
-                                    }}
-                                  >
-                                    Use in override
-                                  </button>
-                                </div>
-                              </article>
-                            );
-                          })}
+                                    })}
+                                    {(instructor.weeklyAvailability || []).length > 4 ? (
+                                      <span>+{instructor.weeklyAvailability.length - 4} more availability windows</span>
+                                    ) : null}
+                                  </div>
+                                  <div className="admin-actions">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setAdminInstructorsView('editor');
+                                        startEditingInstructor(instructor);
+                                      }}
+                                    >
+                                      {editingInstructorId === instructor._id ? 'Close editor' : 'Edit employee'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-button"
+                                      onClick={() => {
+                                        const firstService = adminServices.find((service) =>
+                                          (instructor.serviceIds || []).map(String).includes(String(service._id))
+                                        );
+                                        const firstLocation =
+                                          (firstService?.locations || []).find((location) =>
+                                            (instructor.locationIds || []).includes(location.id)
+                                          ) || firstService?.locations?.[0];
+                                        setAdminInstructorsView('coverage');
+                                        setOverrideForm({
+                                          serviceId: firstService?._id || '',
+                                          date: '',
+                                          locationId: firstLocation?.id || '',
+                                          time: '',
+                                          instructorName: instructor.name,
+                                        });
+                                      }}
+                                    >
+                                      Use in override
+                                    </button>
+                                  </div>
+                                </article>
+                              );
+                            })}
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    </section>
+                  ) : null}
 
-                    <div className="instructor-page-column">
-                      <div className="panel inset-panel">
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">{editingInstructorId ? 'Edit Employee' : 'New Employee'}</p>
-                          <h2>{editingInstructorId ? 'Update Instructor Details' : 'Add a New Instructor'}</h2>
-                        </div>
-                        <p className="section-copy">Create a new team member, decide what they teach, where they work, and add their weekly teaching windows.</p>
-                        <form className="booking-form" onSubmit={handleInstructorSubmit}>
+                  {adminInstructorsView === 'editor' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">{editingInstructorId ? 'Edit Employee' : 'New Employee'}</p>
+                        <h2>{editingInstructorId ? 'Update Instructor Details' : 'Add a New Instructor'}</h2>
+                      </div>
+                      <p className="section-copy">Create a new team member, decide what they teach, where they work, and add their weekly teaching windows.</p>
+                      <form className="booking-form" onSubmit={handleInstructorSubmit}>
                         <div className="form-grid-two">
                           <label>
                             Full name
@@ -2906,307 +3085,333 @@ export default function App() {
                             Reset form
                           </button>
                         </div>
-                        </form>
-                      </div>
+                      </form>
+                    </section>
+                  ) : null}
 
-                      <div className="panel inset-panel">
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Availability</p>
-                          <h2>Book By Instructor</h2>
-                        </div>
-                        <p className="section-copy">See exactly when a team member is available to teach at a chosen location before you set an override or answer member questions.</p>
-                        <div className="booking-form">
-                          <div className="form-grid-two">
-                            <label>
-                              Instructor
-                              <select
-                                value={availabilityExplorer.instructorId}
-                                onChange={(event) => {
-                                  const nextInstructor = adminInstructors.find((instructor) => instructor._id === event.target.value);
-                                  const nextService = adminServices.find((service) =>
-                                    (nextInstructor?.serviceIds || []).map(String).includes(String(service._id))
-                                  );
-                                  const nextLocation = (nextService?.locations || []).find((location) =>
-                                    (nextInstructor?.locationIds || []).includes(location.id)
-                                  );
-                                  setAvailabilityExplorer((current) => ({
-                                    ...current,
-                                    instructorId: event.target.value,
-                                    serviceId: nextService?._id || '',
-                                    locationId: nextLocation?.id || '',
-                                  }));
-                                }}
-                              >
-                                {adminInstructors.map((instructor) => (
-                                  <option key={instructor._id} value={instructor._id}>
-                                    {instructor.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Service
-                              <select
-                                value={selectedAvailabilityService?._id || ''}
-                                onChange={(event) => {
-                                  const nextService = adminServices.find((service) => service._id === event.target.value);
-                                  setAvailabilityExplorer((current) => ({
-                                    ...current,
-                                    serviceId: event.target.value,
-                                    locationId: nextService?.locations?.[0]?.id || '',
-                                  }));
-                                }}
-                              >
-                                {availabilityServiceOptions.map((service) => (
-                                  <option key={service._id} value={service._id}>
-                                    {service.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Location
-                              <select
-                                value={selectedAvailabilityLocation?.id || ''}
-                                onChange={(event) =>
-                                  setAvailabilityExplorer((current) => ({ ...current, locationId: event.target.value }))
-                                }
-                              >
-                                {availabilityLocationOptions.map((location) => (
-                                  <option key={location.id} value={location.id}>
-                                    {location.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Date
-                              <input
-                                type="date"
-                                value={availabilityExplorer.date}
-                                min={new Date().toISOString().slice(0, 10)}
-                                onChange={(event) =>
-                                  setAvailabilityExplorer((current) => ({ ...current, date: event.target.value }))
-                                }
-                              />
-                            </label>
-                          </div>
-                        </div>
-                        <div className="availability-chip-grid">
-                          {availabilityExplorer.date ? (
-                            instructorAvailabilitySlots.length > 0 ? (
-                              instructorAvailabilitySlots.map((slot) => (
-                                <span key={slot.time} className="availability-chip">
-                                  {slot.label}
-                                </span>
-                              ))
-                            ) : (
-                              <p className="section-copy">No available class times for that instructor on the selected date.</p>
-                            )
-                          ) : (
-                            <p className="section-copy">Pick a date to see that instructor’s teaching windows.</p>
-                          )}
-                        </div>
+                  {adminInstructorsView === 'availability' ? (
+                    <section className="panel bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Availability</p>
+                        <h2>Book By Instructor</h2>
                       </div>
-
-                      <div className="panel inset-panel">
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Override</p>
-                          <h2>One-Time Coverage Change</h2>
-                        </div>
-                        <p className="section-copy">Use this when a specific class needs a new instructor without changing the standard weekly schedule.</p>
-                        <form className="booking-form" onSubmit={handleOverrideSubmit}>
-                          <div className="form-grid-two">
-                            <label>
-                              Service
-                              <select
-                                name="serviceId"
-                                value={overrideForm.serviceId}
-                                onChange={(event) => {
-                                  const nextService = adminServices.find((service) => service._id === event.target.value);
-                                  setOverrideForm((current) => ({
-                                    ...current,
-                                    serviceId: event.target.value,
-                                    locationId: nextService?.locations?.[0]?.id || '',
-                                    date: '',
-                                    time: '',
-                                    instructorName: '',
-                                  }));
-                                }}
-                                required
-                              >
-                                {adminServices.map((service) => (
-                                  <option key={service._id} value={service._id}>
-                                    {service.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Location
-                              <select
-                                name="locationId"
-                                value={overrideForm.locationId}
-                                onChange={(event) =>
-                                  setOverrideForm((current) => ({
-                                    ...current,
-                                    locationId: event.target.value,
-                                    time: '',
-                                    instructorName: '',
-                                  }))
-                                }
-                                required
-                              >
-                                {(selectedOverrideService?.locations || []).map((location) => (
-                                  <option key={location.id} value={location.id}>
-                                    {location.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Date
-                              <input
-                                name="date"
-                                type="date"
-                                value={overrideForm.date}
-                                min={new Date().toISOString().slice(0, 10)}
-                                onChange={(event) =>
-                                  setOverrideForm((current) => ({
-                                    ...current,
-                                    date: event.target.value,
-                                    time: '',
-                                    instructorName: '',
-                                  }))
-                                }
-                                required
-                              />
-                            </label>
-                            <label>
-                              Class time
-                              <select
-                                name="time"
-                                value={overrideForm.time}
-                                onChange={(event) =>
-                                  setOverrideForm((current) => ({
-                                    ...current,
-                                    time: event.target.value,
-                                    instructorName:
-                                      overrideSlots.find((slot) => slot.time === event.target.value)?.defaultInstructor || '',
-                                  }))
-                                }
-                                disabled={!overrideForm.date}
-                                required
-                              >
-                                <option value="">{overrideForm.date ? 'Select a class time' : 'Choose a date first'}</option>
-                                {overrideSlots.map((slot) => (
-                                  <option key={slot.time} value={slot.time}>
-                                    {slot.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <label>
-                              Instructor
-                              <select
-                                name="instructorName"
-                                value={overrideForm.instructorName}
-                                onChange={updateForm(setOverrideForm)}
-                                disabled={!overrideForm.time}
-                                required
-                              >
-                                <option value="">{overrideForm.time ? 'Select instructor' : 'Choose a time first'}</option>
-                                {overrideInstructorOptions.map((instructor) => (
-                                  <option key={instructor} value={instructor}>
-                                    {instructor}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            <div className="booking-helper-card booking-helper-card-compact">
-                              <strong>Override preview</strong>
-                              <span>
-                                {overrideForm.date && overrideForm.time
-                                  ? `${overrideForm.date} at ${formatTimeLabel(overrideForm.time)}`
-                                  : 'Pick a date and time to preview the override.'}
-                              </span>
-                            </div>
-                          </div>
-                          <button type="submit" disabled={overrideLoading}>
-                            {overrideLoading ? 'Saving...' : 'Save instructor change'}
-                          </button>
-                        </form>
-                      </div>
-
-                      <div className="panel inset-panel">
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Saved Changes</p>
-                          <h2>Scheduled Coverage Changes</h2>
-                        </div>
-                        <p className="section-copy">Review every one-time instructor swap tied to the currently selected service.</p>
-                        <div className="service-list admin-override-list">
-                          {(selectedOverrideService?.scheduleOverrides || []).length === 0 ? (
-                            <p>No instructor changes have been scheduled yet.</p>
-                          ) : (
-                            selectedOverrideService.scheduleOverrides
-                              .slice()
-                              .sort((left, right) =>
-                                `${left.date}-${left.time}`.localeCompare(`${right.date}-${right.time}`)
-                              )
-                              .map((override) => {
-                                const overrideLocation = selectedOverrideService.locations.find((location) => location.id === override.locationId);
-                                return (
-                                  <article key={override.id} className="service-card">
-                                    <div className="service-card-header">
-                                      <h3>{override.instructorName}</h3>
-                                      <span>{formatTimeLabel(override.time)}</span>
-                                    </div>
-                                    <p>
-                                      {override.date} at {overrideLocation?.name || 'Selected location'}
-                                    </p>
-                                    <p>{overrideLocation?.address}</p>
-                                    <div className="admin-actions">
-                                      <button
-                                        type="button"
-                                        className="danger-button"
-                                        onClick={() => handleRemoveOverride(selectedOverrideService._id, override.id)}
-                                      >
-                                        Remove override
-                                      </button>
-                                    </div>
-                                  </article>
+                      <p className="section-copy">See exactly when a team member is available to teach at a chosen location before you answer member questions or set an override.</p>
+                      <div className="booking-form">
+                        <div className="form-grid-two">
+                          <label>
+                            Instructor
+                            <select
+                              value={availabilityExplorer.instructorId}
+                              onChange={(event) => {
+                                const nextInstructor = adminInstructors.find((instructor) => instructor._id === event.target.value);
+                                const nextService = adminServices.find((service) =>
+                                  (nextInstructor?.serviceIds || []).map(String).includes(String(service._id))
                                 );
-                              })
-                          )}
+                                const nextLocation = (nextService?.locations || []).find((location) =>
+                                  (nextInstructor?.locationIds || []).includes(location.id)
+                                );
+                                setAvailabilityExplorer((current) => ({
+                                  ...current,
+                                  instructorId: event.target.value,
+                                  serviceId: nextService?._id || '',
+                                  locationId: nextLocation?.id || '',
+                                }));
+                              }}
+                            >
+                              {adminInstructors.map((instructor) => (
+                                <option key={instructor._id} value={instructor._id}>
+                                  {instructor.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Service
+                            <select
+                              value={selectedAvailabilityService?._id || ''}
+                              onChange={(event) => {
+                                const nextService = adminServices.find((service) => service._id === event.target.value);
+                                setAvailabilityExplorer((current) => ({
+                                  ...current,
+                                  serviceId: event.target.value,
+                                  locationId: nextService?.locations?.[0]?.id || '',
+                                }));
+                              }}
+                            >
+                              {availabilityServiceOptions.map((service) => (
+                                <option key={service._id} value={service._id}>
+                                  {service.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Location
+                            <select
+                              value={selectedAvailabilityLocation?.id || ''}
+                              onChange={(event) =>
+                                setAvailabilityExplorer((current) => ({ ...current, locationId: event.target.value }))
+                              }
+                            >
+                              {availabilityLocationOptions.map((location) => (
+                                <option key={location.id} value={location.id}>
+                                  {location.name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Date
+                            <input
+                              type="date"
+                              value={availabilityExplorer.date}
+                              min={new Date().toISOString().slice(0, 10)}
+                              onChange={(event) =>
+                                setAvailabilityExplorer((current) => ({ ...current, date: event.target.value }))
+                              }
+                            />
+                          </label>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                </section>
+                      <div className="availability-chip-grid">
+                        {availabilityExplorer.date ? (
+                          instructorAvailabilitySlots.length > 0 ? (
+                            instructorAvailabilitySlots.map((slot) => (
+                              <span key={slot.time} className="availability-chip">
+                                {slot.label}
+                              </span>
+                            ))
+                          ) : (
+                            <p className="section-copy">No available class times for that instructor on the selected date.</p>
+                          )
+                        ) : (
+                          <p className="section-copy">Pick a date to see that instructor’s teaching windows.</p>
+                        )}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {adminInstructorsView === 'coverage' ? (
+                    <section className="panel bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Coverage</p>
+                        <h2>One-Time Instructor Coverage</h2>
+                      </div>
+                      <p className="section-copy">Use this workspace when a specific class needs a new instructor without changing the standard weekly schedule.</p>
+                      <div className="admin-workspace-columns">
+                        <div className="panel inset-panel">
+                          <div className="panel-heading compact-heading">
+                            <p className="panel-kicker">Override</p>
+                            <h2>One-Time Coverage Change</h2>
+                          </div>
+                          <p className="section-copy">Pick the service, date, class time, and the instructor who should cover that slot.</p>
+                          <form className="booking-form" onSubmit={handleOverrideSubmit}>
+                            <div className="form-grid-two">
+                              <label>
+                                Service
+                                <select
+                                  name="serviceId"
+                                  value={overrideForm.serviceId}
+                                  onChange={(event) => {
+                                    const nextService = adminServices.find((service) => service._id === event.target.value);
+                                    setOverrideForm((current) => ({
+                                      ...current,
+                                      serviceId: event.target.value,
+                                      locationId: nextService?.locations?.[0]?.id || '',
+                                      date: '',
+                                      time: '',
+                                      instructorName: '',
+                                    }));
+                                  }}
+                                  required
+                                >
+                                  {adminServices.map((service) => (
+                                    <option key={service._id} value={service._id}>
+                                      {service.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Location
+                                <select
+                                  name="locationId"
+                                  value={overrideForm.locationId}
+                                  onChange={(event) =>
+                                    setOverrideForm((current) => ({
+                                      ...current,
+                                      locationId: event.target.value,
+                                      time: '',
+                                      instructorName: '',
+                                    }))
+                                  }
+                                  required
+                                >
+                                  {(selectedOverrideService?.locations || []).map((location) => (
+                                    <option key={location.id} value={location.id}>
+                                      {location.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Date
+                                <input
+                                  name="date"
+                                  type="date"
+                                  value={overrideForm.date}
+                                  min={new Date().toISOString().slice(0, 10)}
+                                  onChange={(event) =>
+                                    setOverrideForm((current) => ({
+                                      ...current,
+                                      date: event.target.value,
+                                      time: '',
+                                      instructorName: '',
+                                    }))
+                                  }
+                                  required
+                                />
+                              </label>
+                              <label>
+                                Class time
+                                <select
+                                  name="time"
+                                  value={overrideForm.time}
+                                  onChange={(event) =>
+                                    setOverrideForm((current) => ({
+                                      ...current,
+                                      time: event.target.value,
+                                      instructorName:
+                                        overrideSlots.find((slot) => slot.time === event.target.value)?.defaultInstructor || '',
+                                    }))
+                                  }
+                                  disabled={!overrideForm.date}
+                                  required
+                                >
+                                  <option value="">{overrideForm.date ? 'Select a class time' : 'Choose a date first'}</option>
+                                  {overrideSlots.map((slot) => (
+                                    <option key={slot.time} value={slot.time}>
+                                      {slot.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Instructor
+                                <select
+                                  name="instructorName"
+                                  value={overrideForm.instructorName}
+                                  onChange={updateForm(setOverrideForm)}
+                                  disabled={!overrideForm.time}
+                                  required
+                                >
+                                  <option value="">{overrideForm.time ? 'Select instructor' : 'Choose a time first'}</option>
+                                  {overrideInstructorOptions.map((instructor) => (
+                                    <option key={instructor} value={instructor}>
+                                      {instructor}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <div className="booking-helper-card booking-helper-card-compact">
+                                <strong>Override preview</strong>
+                                <span>
+                                  {overrideForm.date && overrideForm.time
+                                    ? `${overrideForm.date} at ${formatTimeLabel(overrideForm.time)}`
+                                    : 'Pick a date and time to preview the override.'}
+                                </span>
+                              </div>
+                            </div>
+                            <button type="submit" disabled={overrideLoading}>
+                              {overrideLoading ? 'Saving...' : 'Save instructor change'}
+                            </button>
+                          </form>
+                        </div>
+
+                        <div className="panel inset-panel">
+                          <div className="panel-heading compact-heading">
+                            <p className="panel-kicker">Saved Changes</p>
+                            <h2>Scheduled Coverage Changes</h2>
+                          </div>
+                          <p className="section-copy">Review every one-time instructor swap tied to the currently selected service.</p>
+                          <div className="service-list admin-override-list">
+                            {(selectedOverrideService?.scheduleOverrides || []).length === 0 ? (
+                              <p>No instructor changes have been scheduled yet.</p>
+                            ) : (
+                              selectedOverrideService.scheduleOverrides
+                                .slice()
+                                .sort((left, right) =>
+                                  `${left.date}-${left.time}`.localeCompare(`${right.date}-${right.time}`)
+                                )
+                                .map((override) => {
+                                  const overrideLocation = selectedOverrideService.locations.find((location) => location.id === override.locationId);
+                                  return (
+                                    <article key={override.id} className="service-card">
+                                      <div className="service-card-header">
+                                        <h3>{override.instructorName}</h3>
+                                        <span>{formatTimeLabel(override.time)}</span>
+                                      </div>
+                                      <p>
+                                        {override.date} at {overrideLocation?.name || 'Selected location'}
+                                      </p>
+                                      <p>{overrideLocation?.address}</p>
+                                      <div className="admin-actions">
+                                        <button
+                                          type="button"
+                                          className="danger-button"
+                                          onClick={() => handleRemoveOverride(selectedOverrideService._id, override.id)}
+                                        >
+                                          Remove override
+                                        </button>
+                                      </div>
+                                    </article>
+                                  );
+                                })
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  ) : null}
+                </>
               ) : null}
 
               {adminPage === 'schedule' ? (
-                <section className="panel panel-emphasis">
-                  <div className="panel-heading">
-                    <p className="panel-kicker">Schedule</p>
-                    <h2>Attendance & Session Overview</h2>
-                  </div>
-                  <p className="section-copy">Track what is booked today, confirm attendance after class time, and watch for no-shows or cancellations.</p>
-                  <div className="admin-summary">
-                    <div className="summary-card">
-                      <strong>{todayAdminBookings.length}</strong>
-                      <span>Today</span>
+                adminScheduleView === 'overview' ? (
+                  <section className="panel panel-emphasis bookings-panel">
+                    <div className="panel-heading">
+                      <p className="panel-kicker">Schedule</p>
+                      <h2>Attendance & Session Overview</h2>
                     </div>
-                    <div className="summary-card">
-                      <strong>{attendedAdminBookings.length}</strong>
-                      <span>Attended</span>
+                    <p className="section-copy">Use this snapshot to see what is coming up next, what still needs attendance review, and where the last completed class landed.</p>
+                    <div className="member-summary-grid">
+                      <article className="feature-card">
+                        <h3>Next upcoming class</h3>
+                        <p>
+                          {nextUpcomingAdminSession
+                            ? `${nextUpcomingAdminSession.serviceName} at ${nextUpcomingAdminSession.locationName} on ${formatBookingDate(nextUpcomingAdminSession.appointmentDate)}.`
+                            : 'No upcoming classes are booked yet.'}
+                        </p>
+                      </article>
+                      <article className="feature-card">
+                        <h3>Attendance waiting</h3>
+                        <p>
+                          {pendingAttendanceCount > 0
+                            ? `${pendingAttendanceCount} booking${pendingAttendanceCount === 1 ? '' : 's'} still need an attended or no-show decision.`
+                            : 'All finished classes have already been reviewed.'}
+                        </p>
+                      </article>
+                      <article className="feature-card">
+                        <h3>Latest completed class</h3>
+                        <p>
+                          {latestCompletedAdminSession
+                            ? `${latestCompletedAdminSession.serviceName} had ${latestCompletedAdminSession.bookings.length} booking${latestCompletedAdminSession.bookings.length === 1 ? '' : 's'} and is ready for follow-up.`
+                            : 'Completed classes will appear here once the schedule starts moving.'}
+                        </p>
+                      </article>
                     </div>
-                    <div className="summary-card">
-                      <strong>{noShowAdminBookings.length}</strong>
-                      <span>No-shows</span>
-                    </div>
-                  </div>
-                </section>
+                  </section>
+                ) : null
               ) : null}
             </>
           ) : (
@@ -3970,23 +4175,30 @@ export default function App() {
             </>
           )}
 
-          {!isAdmin || adminPage === 'schedule' ? (
+          {!isAdmin || (adminPage === 'schedule' && adminScheduleView !== 'overview') ? (
             <section className="panel bookings-panel">
               <div className="bookings-header">
                 <div>
                   <p className="panel-kicker">{isAdmin ? 'Studio Calendar' : 'Social Proof'}</p>
-                  <h2>{isAdmin ? 'Upcoming Class Schedule' : 'Recent Reviews'}</h2>
+                  <h2>
+                    {isAdmin
+                      ? adminScheduleView === 'calendar'
+                        ? 'Monthly Class Calendar'
+                        : adminScheduleView === 'completed'
+                          ? 'Past Class Review'
+                          : 'Future Class Schedule'
+                      : 'Recent Reviews'}
+                  </h2>
                   <p className="section-copy">
                     {isAdmin
-                      ? 'See who is booked into each session, how many spots are left, and mark attendance once the class time has passed.'
+                      ? adminScheduleView === 'calendar'
+                        ? 'View the month at a glance, then jump back into class details whenever you need them.'
+                        : adminScheduleView === 'completed'
+                          ? 'Review finished classes, confirm attendance, and mark any no-shows after the session has passed.'
+                          : 'See who is booked into each future session and how many spots are still left.'
                       : 'Member feedback helps show what the wellness center is doing well.'}
                   </p>
                 </div>
-                {isAdmin ? (
-                  <button type="button" className="secondary-button" onClick={loadBookings}>
-                    Refresh
-                  </button>
-                ) : null}
               </div>
 
               {isAdmin ? (
@@ -3995,197 +4207,203 @@ export default function App() {
                     <p>Loading bookings...</p>
                   ) : (
                     <div className="member-stack schedule-stack">
-                      <div className="admin-calendar-panel">
-                        <div className="admin-calendar-header">
-                          <div>
-                            <p className="panel-kicker">Monthly View</p>
-                            <h2>{formatMonthLabel(calendarMonthDate)}</h2>
-                          </div>
-                          <div className="admin-calendar-nav">
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() =>
-                                setCalendarMonthDate(
-                                  (current) => new Date(current.getFullYear(), current.getMonth() - 1, 1)
-                                )
-                              }
-                            >
-                              Previous
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() =>
-                                setCalendarMonthDate(
-                                  (current) => new Date(current.getFullYear(), current.getMonth() + 1, 1)
-                                )
-                              }
-                            >
-                              Next
-                            </button>
-                          </div>
-                        </div>
-                        <div className="admin-calendar-grid">
-                          {calendarWeekdays.map((weekday) => (
-                            <div key={weekday} className="admin-calendar-weekday">
-                              {weekday}
+                      {adminScheduleView === 'calendar' ? (
+                        <div className="admin-calendar-panel">
+                          <div className="admin-calendar-header">
+                            <div>
+                              <p className="panel-kicker">Monthly View</p>
+                              <h2>{formatMonthLabel(calendarMonthDate)}</h2>
                             </div>
-                          ))}
-                          {calendarCells.map((day) => (
-                            <article
-                              key={day.key}
-                              className={`admin-calendar-day${day.isCurrentMonth ? '' : ' muted'}${day.isToday ? ' today' : ''}`}
-                            >
-                              <div className="admin-calendar-day-label">{day.label}</div>
-                              <div className="admin-calendar-events">
-                                {day.sessions.length === 0 ? (
-                                  <span className="admin-calendar-empty">No classes</span>
-                                ) : (
-                                  day.sessions.map((session) => (
-                                    <div key={session.key} className="admin-calendar-event">
-                                      <strong>{session.serviceName}</strong>
-                                      <span>{new Date(session.appointmentDate).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
-                                      <span>{session.locationName}</span>
-                                    </div>
-                                  ))
-                                )}
+                            <div className="admin-calendar-nav">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() =>
+                                  setCalendarMonthDate(
+                                    (current) => new Date(current.getFullYear(), current.getMonth() - 1, 1)
+                                  )
+                                }
+                              >
+                                Previous
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() =>
+                                  setCalendarMonthDate(
+                                    (current) => new Date(current.getFullYear(), current.getMonth() + 1, 1)
+                                  )
+                                }
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+                          <div className="admin-calendar-grid">
+                            {calendarWeekdays.map((weekday) => (
+                              <div key={weekday} className="admin-calendar-weekday">
+                                {weekday}
                               </div>
-                            </article>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Upcoming</p>
-                          <h2>Future Classes</h2>
-                        </div>
-                        {adminUpcomingSessions.length === 0 ? (
-                          <p>No upcoming sessions are booked yet.</p>
-                        ) : (
-                          <div className="schedule-session-grid">
-                            {adminUpcomingSessions.map((session) => (
-                              <article key={session.key} className="schedule-session-card">
-                                <div className="schedule-session-topline">
-                                  <div>
-                                    <p className="panel-kicker">{session.category || 'Session'}</p>
-                                    <h3>{session.serviceName}</h3>
-                                  </div>
-                                  <span className="status-pill status-approved">{session.spotsLeft} spots left</span>
-                                </div>
-                                <div className="schedule-session-meta">
-                                  <span>{formatBookingDate(session.appointmentDate)}</span>
-                                  <span>{session.locationName}</span>
-                                  <span>{formatPrice(session.price)}</span>
-                                </div>
-                                <p className="schedule-session-address">{session.locationAddress}</p>
-                                {session.instructorName ? <p className="schedule-session-address"><strong>Instructor:</strong> {session.instructorName}</p> : null}
-                                <div className="schedule-member-list">
-                                  {session.bookings.map((booking) => (
-                                    <article key={booking._id} className="schedule-member-card">
-                                      <div>
-                                        <strong>{booking.clientName}</strong>
-                                        <span>{booking.email}</span>
-                                        <span>{formatPaymentStatusLabel(booking.paymentStatus)}</span>
-                                        {booking.paymentLast4 ? <span>Card ending in {booking.paymentLast4}</span> : null}
+                            ))}
+                            {calendarCells.map((day) => (
+                              <article
+                                key={day.key}
+                                className={`admin-calendar-day${day.isCurrentMonth ? '' : ' muted'}${day.isToday ? ' today' : ''}`}
+                              >
+                                <div className="admin-calendar-day-label">{day.label}</div>
+                                <div className="admin-calendar-events">
+                                  {day.sessions.length === 0 ? (
+                                    <span className="admin-calendar-empty">No classes</span>
+                                  ) : (
+                                    day.sessions.map((session) => (
+                                      <div key={session.key} className="admin-calendar-event">
+                                        <strong>{session.serviceName}</strong>
+                                        <span>{new Date(session.appointmentDate).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+                                        <span>{session.locationName}</span>
                                       </div>
-                                      <div className="schedule-member-actions">
-                                        {booking.status !== 'Cancelled' ? (
-                                          <button
-                                            type="button"
-                                            className="danger-button"
-                                            onClick={() => handleCancelBooking(booking._id)}
-                                          >
-                                            Cancel booking
-                                          </button>
-                                        ) : null}
-                                      </div>
-                                    </article>
-                                  ))}
-                                </div>
-                                <div className="schedule-capacity-row">
-                                  <strong>{session.bookings.length} booked</strong>
-                                  <span>{session.capacity} total spots</span>
+                                    ))
+                                  )}
                                 </div>
                               </article>
                             ))}
                           </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <div className="panel-heading compact-heading">
-                          <p className="panel-kicker">Completed</p>
-                          <h2>Past Classes</h2>
                         </div>
-                        <p className="section-copy">
-                          Once a class time has passed, use these member rows to confirm attended or mark a no-show.
-                        </p>
-                        {adminCompletedSessions.length === 0 ? (
-                          <p>No past sessions yet.</p>
-                        ) : (
-                          <div className="schedule-session-grid">
-                            {adminCompletedSessions.map((session) => (
-                              <article key={session.key} className="schedule-session-card">
-                                <div className="schedule-session-topline">
-                                  <div>
-                                    <p className="panel-kicker">{session.category || 'Session'}</p>
-                                    <h3>{session.serviceName}</h3>
+                      ) : null}
+
+                      {adminScheduleView === 'upcoming' ? (
+                        <div>
+                          <div className="panel-heading compact-heading">
+                            <p className="panel-kicker">Upcoming</p>
+                            <h2>Future Classes</h2>
+                          </div>
+                          {adminUpcomingSessions.length === 0 ? (
+                            <p>No upcoming sessions are booked yet.</p>
+                          ) : (
+                            <div className="schedule-session-grid">
+                              {adminUpcomingSessions.map((session) => (
+                                <article key={session.key} className="schedule-session-card">
+                                  <div className="schedule-session-topline">
+                                    <div>
+                                      <p className="panel-kicker">{session.category || 'Session'}</p>
+                                      <h3>{session.serviceName}</h3>
+                                    </div>
+                                    <span className="status-pill status-approved">{session.spotsLeft} spots left</span>
                                   </div>
-                                  <span className="status-pill">{session.bookings.length} bookings</span>
-                                </div>
-                                <div className="schedule-session-meta">
-                                  <span>{formatBookingDate(session.appointmentDate)}</span>
-                                  <span>{session.locationName}</span>
-                                  <span>{formatPrice(session.price)}</span>
-                                </div>
-                                <p className="schedule-session-address">{session.locationAddress}</p>
-                                {session.instructorName ? <p className="schedule-session-address"><strong>Instructor:</strong> {session.instructorName}</p> : null}
-                                <div className="schedule-member-list">
-                                  {session.bookings.map((booking) => (
-                                    <article key={booking._id} className="schedule-member-card">
-                                      <div>
-                                        <strong>{booking.clientName}</strong>
-                                        <span>{booking.email}</span>
-                                        <span>{formatAttendanceStatusLabel(booking.attendanceStatus)}</span>
-                                        <span>{formatPaymentStatusLabel(booking.paymentStatus)}</span>
-                                        {booking.paymentLast4 ? <span>Card ending in {booking.paymentLast4}</span> : null}
-                                        {booking.noShowFeeAmount ? <span>No-show fee: {formatPrice(booking.noShowFeeAmount)}</span> : null}
-                                        {booking.creditEligible ? <span>Open Gym credit available</span> : null}
-                                      </div>
-                                      <div className="schedule-member-actions">
-                                        {booking.attendanceStatus === 'Scheduled' ? (
-                                          <>
-                                            <button
-                                              type="button"
-                                              className="secondary-button"
-                                              onClick={() => handleAttendanceUpdate(booking._id, 'Attended')}
-                                            >
-                                              Confirm attended
-                                            </button>
+                                  <div className="schedule-session-meta">
+                                    <span>{formatBookingDate(session.appointmentDate)}</span>
+                                    <span>{session.locationName}</span>
+                                    <span>{formatPrice(session.price)}</span>
+                                  </div>
+                                  <p className="schedule-session-address">{session.locationAddress}</p>
+                                  {session.instructorName ? <p className="schedule-session-address"><strong>Instructor:</strong> {session.instructorName}</p> : null}
+                                  <div className="schedule-member-list">
+                                    {session.bookings.map((booking) => (
+                                      <article key={booking._id} className="schedule-member-card">
+                                        <div>
+                                          <strong>{booking.clientName}</strong>
+                                          <span>{booking.email}</span>
+                                          <span>{formatPaymentStatusLabel(booking.paymentStatus)}</span>
+                                          {booking.paymentLast4 ? <span>Card ending in {booking.paymentLast4}</span> : null}
+                                        </div>
+                                        <div className="schedule-member-actions">
+                                          {booking.status !== 'Cancelled' ? (
                                             <button
                                               type="button"
                                               className="danger-button"
-                                              onClick={() => handleAttendanceUpdate(booking._id, 'No-show')}
+                                              onClick={() => handleCancelBooking(booking._id)}
                                             >
-                                              Mark no-show
+                                              Cancel booking
                                             </button>
-                                          </>
-                                        ) : null}
-                                      </div>
-                                    </article>
-                                  ))}
-                                </div>
-                                <div className="schedule-capacity-row">
-                                  <strong>{session.bookings.length} booked</strong>
-                                  <span>{session.capacity} total spots</span>
-                                </div>
-                              </article>
-                            ))}
+                                          ) : null}
+                                        </div>
+                                      </article>
+                                    ))}
+                                  </div>
+                                  <div className="schedule-capacity-row">
+                                    <strong>{session.bookings.length} booked</strong>
+                                    <span>{session.capacity} total spots</span>
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+
+                      {adminScheduleView === 'completed' ? (
+                        <div>
+                          <div className="panel-heading compact-heading">
+                            <p className="panel-kicker">Completed</p>
+                            <h2>Past Classes</h2>
                           </div>
-                        )}
-                      </div>
+                          <p className="section-copy">
+                            Once a class time has passed, use these member rows to confirm attended or mark a no-show.
+                          </p>
+                          {adminCompletedSessions.length === 0 ? (
+                            <p>No past sessions yet.</p>
+                          ) : (
+                            <div className="schedule-session-grid">
+                              {adminCompletedSessions.map((session) => (
+                                <article key={session.key} className="schedule-session-card">
+                                  <div className="schedule-session-topline">
+                                    <div>
+                                      <p className="panel-kicker">{session.category || 'Session'}</p>
+                                      <h3>{session.serviceName}</h3>
+                                    </div>
+                                    <span className="status-pill">{session.bookings.length} bookings</span>
+                                  </div>
+                                  <div className="schedule-session-meta">
+                                    <span>{formatBookingDate(session.appointmentDate)}</span>
+                                    <span>{session.locationName}</span>
+                                    <span>{formatPrice(session.price)}</span>
+                                  </div>
+                                  <p className="schedule-session-address">{session.locationAddress}</p>
+                                  {session.instructorName ? <p className="schedule-session-address"><strong>Instructor:</strong> {session.instructorName}</p> : null}
+                                  <div className="schedule-member-list">
+                                    {session.bookings.map((booking) => (
+                                      <article key={booking._id} className="schedule-member-card">
+                                        <div>
+                                          <strong>{booking.clientName}</strong>
+                                          <span>{booking.email}</span>
+                                          <span>{formatAttendanceStatusLabel(booking.attendanceStatus)}</span>
+                                          <span>{formatPaymentStatusLabel(booking.paymentStatus)}</span>
+                                          {booking.paymentLast4 ? <span>Card ending in {booking.paymentLast4}</span> : null}
+                                          {booking.noShowFeeAmount ? <span>No-show fee: {formatPrice(booking.noShowFeeAmount)}</span> : null}
+                                          {booking.creditEligible ? <span>Open Gym credit available</span> : null}
+                                        </div>
+                                        <div className="schedule-member-actions">
+                                          {booking.attendanceStatus === 'Scheduled' ? (
+                                            <>
+                                              <button
+                                                type="button"
+                                                className="secondary-button"
+                                                onClick={() => handleAttendanceUpdate(booking._id, 'Attended')}
+                                              >
+                                                Confirm attended
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="danger-button"
+                                                onClick={() => handleAttendanceUpdate(booking._id, 'No-show')}
+                                              >
+                                                Mark no-show
+                                              </button>
+                                            </>
+                                          ) : null}
+                                        </div>
+                                      </article>
+                                    ))}
+                                  </div>
+                                  <div className="schedule-capacity-row">
+                                    <strong>{session.bookings.length} booked</strong>
+                                    <span>{session.capacity} total spots</span>
+                                  </div>
+                                </article>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   )}
                 </>
