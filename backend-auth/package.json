@@ -1,0 +1,24 @@
+{
+  "name": "backend-auth",
+  "version": "1.0.0",
+  "description": "Backend API for the wellness booking app",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.1",
+    "helmet": "^8.1.0",
+    "mongoose": "^9.2.4",
+    "nodemailer": "^8.0.3"
+  }
+}
