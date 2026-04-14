@@ -2,7 +2,6 @@ services:
   - type: web
     runtime: node
     name: wellness-backend
-    plan: free
     rootDir: backend-auth
     buildCommand: npm install
     startCommand: npm start
@@ -52,7 +51,6 @@ services:
   - type: web
     runtime: static
     name: wellness-frontend
-    plan: free
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
