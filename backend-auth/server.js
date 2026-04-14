@@ -706,7 +706,19 @@ function loadDemoState() {
     memoryInstructors = Array.isArray(data.instructors) && data.instructors.length > 0
       ? data.instructors.map(withInstructorDefaults)
       : buildDefaultInstructorSeed(memoryServices).map(createMemoryInstructorRecord);
-    memoryBookings = Array.isArray(data.bookings) ? data.bookings : [];
+    memoryBookings = Array.isArray(data.bookings)
+      ? data.bookings.map((booking) => {
+          const bookingEmail = String(booking.email || '').trim().toLowerCase();
+          const matchedUser = Array.isArray(data.users)
+            ? data.users.find((user) => String(user.email || '').trim().toLowerCase() === bookingEmail)
+            : null;
+
+          return {
+            ...booking,
+            user: booking.user || matchedUser?._id || '',
+          };
+        })
+      : [];
     memoryUsers = Array.isArray(data.users) ? data.users : [];
     memoryReviews = Array.isArray(data.reviews) ? data.reviews : [];
     memoryAuthTokens = Array.isArray(data.authTokens) ? data.authTokens : [];
@@ -951,6 +963,95 @@ async function findBookingById(id) {
           : null
       )))()
     : memoryBookings.find((booking) => booking._id === id) || null;
+}
+
+function getBookingOwnerId(booking) {
+  if (!booking) {
+    return '';
+  }
+
+  return String(booking.user?._id || booking.user || '');
+}
+
+function bookingBelongsToUser(booking, user) {
+  if (!booking || !user) {
+    return false;
+  }
+
+  const bookingOwnerId = getBookingOwnerId(booking);
+  if (bookingOwnerId) {
+    return bookingOwnerId === String(user._id);
+  }
+
+  return String(booking.email || '').trim().toLowerCase() === String(user.email || '').trim().toLowerCase();
+}
+
+function buildUserBookingQuery(user) {
+  return {
+    $or: [
+      { user: user._id },
+      { email: String(user.email || '').trim().toLowerCase() },
+    ],
+  };
+}
+
+async function syncBookingsForUser(user, previousEmail = '') {
+  if (!user) {
+    return;
+  }
+
+  const normalizedPreviousEmail = String(previousEmail || '').trim().toLowerCase();
+  const normalizedCurrentEmail = String(user.email || '').trim().toLowerCase();
+  const normalizedCurrentName = String(user.name || '').trim();
+
+  if (databaseReady) {
+    const query = normalizedPreviousEmail && normalizedPreviousEmail !== normalizedCurrentEmail
+      ? {
+          $or: [
+            { user: user._id },
+            { email: normalizedPreviousEmail },
+          ],
+        }
+      : buildUserBookingQuery(user);
+
+    await Booking.updateMany(
+      query,
+      {
+        $set: {
+          user: user._id,
+          email: normalizedCurrentEmail,
+          clientName: normalizedCurrentName,
+          membershipNumber: user.membershipNumber,
+        },
+      }
+    );
+    return;
+  }
+
+  let didUpdate = false;
+  memoryBookings = memoryBookings.map((booking) => {
+    if (
+      getBookingOwnerId(booking) === String(user._id) ||
+      (normalizedPreviousEmail && String(booking.email || '').trim().toLowerCase() === normalizedPreviousEmail) ||
+      String(booking.email || '').trim().toLowerCase() === normalizedCurrentEmail
+    ) {
+      didUpdate = true;
+      return {
+        ...booking,
+        user: String(user._id),
+        email: normalizedCurrentEmail,
+        clientName: normalizedCurrentName,
+        membershipNumber: user.membershipNumber,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    return booking;
+  });
+
+  if (didUpdate) {
+    persistDemoState();
+  }
 }
 
 async function createReview(reviewData) {
@@ -1937,9 +2038,14 @@ app.patch('/api/auth/me', authLimiter, requireAuth, async (req, res) => {
       return res.status(400).json({ message: 'Please provide at least one profile change.' });
     }
 
+    const previousEmail = req.user.email;
     const updatedUser = await updateUserById(req.user._id, updates);
     if (!updatedUser) {
       return res.status(404).json({ message: 'User profile not found.' });
+    }
+
+    if (updates.email || updates.name) {
+      await syncBookingsForUser(updatedUser, previousEmail);
     }
 
     if (updates.passwordHash) {
@@ -2309,14 +2415,14 @@ app.delete('/api/admin/services/:id', adminLimiter, requireAuth, requireAdmin, a
 
 app.get('/api/bookings', requireAuth, async (req, res) => {
   try {
-    const query = req.user.role === 'admin' ? {} : { email: req.user.email };
+    const query = req.user.role === 'admin' ? {} : buildUserBookingQuery(req.user);
     const bookings = databaseReady
       ? (await Booking.find(query).populate('service').sort({ appointmentDate: 1, createdAt: -1 })).map((booking) => ({
           ...booking.toObject(),
           service: withServiceDefaults(booking.service),
         }))
       : memoryBookings
-          .filter((booking) => (req.user.role === 'admin' ? true : booking.email === req.user.email))
+          .filter((booking) => (req.user.role === 'admin' ? true : bookingBelongsToUser(booking, req.user)))
           .sort((a, b) => new Date(a.appointmentDate) - new Date(b.appointmentDate));
 
     res.json(bookings);
@@ -2421,7 +2527,7 @@ app.post('/api/bookings', bookingLimiter, requireAuth, async (req, res) => {
         return res.status(404).json({ message: 'The open gym credit could not be found.' });
       }
 
-      if (req.user.role !== 'admin' && creditSourceBooking.email !== req.user.email) {
+      if (req.user.role !== 'admin' && !bookingBelongsToUser(creditSourceBooking, req.user)) {
         return res.status(403).json({ message: 'You can only use your own open gym credit.' });
       }
 
@@ -2456,6 +2562,7 @@ app.post('/api/bookings', bookingLimiter, requireAuth, async (req, res) => {
     const populatedBooking = databaseReady
       ? await (async () => {
           const booking = await Booking.create({
+            user: req.user._id,
             clientName: req.user.name,
             email: req.user.email,
             membershipNumber: req.user.membershipNumber,
@@ -2497,6 +2604,7 @@ app.post('/api/bookings', bookingLimiter, requireAuth, async (req, res) => {
       : (() => {
           const booking = {
             _id: randomUUID(),
+            user: String(req.user._id),
             clientName: req.user.name,
             email: req.user.email,
             membershipNumber: req.user.membershipNumber,
@@ -2633,7 +2741,7 @@ app.patch('/api/bookings/:id/cancel', bookingLimiter, requireAuth, async (req, r
         return res.status(404).json({ message: 'Booking request not found.' });
       }
 
-      if (req.user.role !== 'admin' && existingBooking.email !== req.user.email) {
+      if (req.user.role !== 'admin' && !bookingBelongsToUser(existingBooking, req.user)) {
         return res.status(403).json({ message: 'You can only cancel your own bookings.' });
       }
 
@@ -2657,7 +2765,7 @@ app.patch('/api/bookings/:id/cancel', bookingLimiter, requireAuth, async (req, r
         return res.status(404).json({ message: 'Booking request not found.' });
       }
 
-      if (req.user.role !== 'admin' && booking.email !== req.user.email) {
+      if (req.user.role !== 'admin' && !bookingBelongsToUser(booking, req.user)) {
         return res.status(403).json({ message: 'You can only cancel your own bookings.' });
       }
 
@@ -2692,7 +2800,7 @@ app.post('/api/reviews', bookingLimiter, requireAuth, async (req, res) => {
       return res.status(404).json({ message: 'Booking not found.' });
     }
 
-    if (req.user.role !== 'admin' && booking.email !== req.user.email) {
+    if (req.user.role !== 'admin' && !bookingBelongsToUser(booking, req.user)) {
       return res.status(403).json({ message: 'You can only review your own bookings.' });
     }
 

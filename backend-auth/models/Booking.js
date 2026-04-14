@@ -2,6 +2,12 @@ const mongoose = require('mongoose');
 
 const bookingSchema = new mongoose.Schema(
   {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+      default: null,
+    },
     clientName: {
       type: String,
       required: true,
@@ -114,5 +120,9 @@ const bookingSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+bookingSchema.index({ service: 1, locationId: 1, appointmentDate: 1, status: 1 });
+bookingSchema.index({ email: 1, appointmentDate: -1 });
+bookingSchema.index({ attendanceStatus: 1, appointmentDate: -1 });
 
 module.exports = mongoose.model('Booking', bookingSchema);
