@@ -1595,6 +1595,15 @@ button {
 
 .employee-card {
   align-content: start;
+  overflow: hidden;
+}
+
+.employee-card .inline-instructor-editor {
+  margin-top: 12px;
+  padding: 18px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(214, 174, 108, 0.14);
 }
 
 .employee-title {

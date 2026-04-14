@@ -732,6 +732,18 @@ export default function App() {
   }, [user?._id, user?.role]);
 
   useEffect(() => {
+    if (adminInstructorsView !== 'editor' || !editingInstructorId) {
+      return;
+    }
+
+    const fallbackLocationId =
+      adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id || '';
+
+    setEditingInstructorId('');
+    setInstructorForm(createEmptyInstructorForm(fallbackLocationId));
+  }, [adminInstructorsView, editingInstructorId, adminServices]);
+
+  useEffect(() => {
     const nextShowAuth = !user || view !== 'app';
     if (nextShowAuth) {
       return;
@@ -1292,8 +1304,7 @@ export default function App() {
 
   function startEditingInstructor(instructor) {
     if (editingInstructorId === instructor._id) {
-      setEditingInstructorId('');
-      setInstructorForm(createEmptyInstructorForm(adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id || ''));
+      resetInstructorEditor();
       return;
     }
 
@@ -1354,8 +1365,7 @@ export default function App() {
         }
       );
 
-      setEditingInstructorId('');
-      setInstructorForm(createEmptyInstructorForm(adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id || ''));
+      resetInstructorEditor();
       await loadAdminInstructors();
       await loadAdminServices();
       await refreshPublicData();
@@ -1933,6 +1943,179 @@ export default function App() {
     : message
       ? { type: 'success', title: 'Done', text: message }
       : null;
+  const defaultInstructorLocationId =
+    adminServices.flatMap((service) => service.locations || []).find(Boolean)?.id ||
+    allAdminLocations[0]?.id ||
+    '';
+
+  function resetInstructorEditor() {
+    setEditingInstructorId('');
+    setInstructorForm(createEmptyInstructorForm(defaultInstructorLocationId));
+  }
+
+  function renderInstructorEditor({ inline = false } = {}) {
+    return (
+      <form
+        className={`booking-form${inline ? ' inline-service-editor inline-instructor-editor' : ''}`}
+        onSubmit={handleInstructorSubmit}
+      >
+        {inline ? (
+          <p className="form-note">
+            Update this employee without leaving the directory. Save when everything looks right.
+          </p>
+        ) : null}
+
+        <div className="form-grid-two">
+          <label>
+            Full name
+            <input name="name" value={instructorForm.name} onChange={updateForm(setInstructorForm)} required />
+          </label>
+          <label>
+            Title
+            <input name="title" value={instructorForm.title} onChange={updateForm(setInstructorForm)} required />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" value={instructorForm.email} onChange={updateForm(setInstructorForm)} required />
+          </label>
+          <label>
+            Phone
+            <input name="phone" value={instructorForm.phone} onChange={updateForm(setInstructorForm)} required />
+          </label>
+        </div>
+
+        <label>
+          Bio
+          <textarea name="bio" value={instructorForm.bio} onChange={updateForm(setInstructorForm)} rows="4" required />
+        </label>
+
+        <div className="form-split-section">
+          <div>
+            <strong className="section-subtitle">Services they can teach</strong>
+            <div className="checkbox-pill-grid">
+              {adminServices.map((service) => (
+                <label key={service._id} className="checkbox-pill">
+                  <input
+                    type="checkbox"
+                    checked={instructorForm.serviceIds.includes(service._id)}
+                    onChange={() => toggleInstructorArrayField('serviceIds', service._id)}
+                  />
+                  <span>{service.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <strong className="section-subtitle">Studio locations</strong>
+            <div className="checkbox-pill-grid">
+              {allAdminLocations.map((location) => (
+                <label key={location.id} className="checkbox-pill">
+                  <input
+                    type="checkbox"
+                    checked={instructorForm.locationIds.includes(location.id)}
+                    onChange={() => toggleInstructorArrayField('locationIds', location.id)}
+                  />
+                  <span>{location.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="availability-editor">
+          <div className="section-heading-inline">
+            <strong className="section-subtitle">Weekly availability</strong>
+            <button type="button" className="secondary-button" onClick={addInstructorAvailabilityRow}>
+              Add work window
+            </button>
+          </div>
+          {instructorForm.weeklyAvailability.map((block, index) => (
+            <div key={`${block.locationId}-${block.dayOfWeek}-${index}`} className="availability-row">
+              <label>
+                Day
+                <select
+                  value={block.dayOfWeek}
+                  onChange={(event) => updateInstructorAvailabilityRow(index, 'dayOfWeek', Number(event.target.value))}
+                >
+                  {weekdayOptions.map((day) => (
+                    <option key={day.value} value={day.value}>
+                      {day.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Location
+                <select
+                  value={block.locationId}
+                  onChange={(event) => updateInstructorAvailabilityRow(index, 'locationId', event.target.value)}
+                >
+                  {(instructorForm.locationIds.length > 0
+                    ? allAdminLocations.filter((location) => instructorForm.locationIds.includes(location.id))
+                    : allAdminLocations
+                  ).map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Start
+                <input
+                  type="time"
+                  value={block.startTime}
+                  onChange={(event) => updateInstructorAvailabilityRow(index, 'startTime', event.target.value)}
+                />
+              </label>
+              <label>
+                End
+                <input
+                  type="time"
+                  value={block.endTime}
+                  onChange={(event) => updateInstructorAvailabilityRow(index, 'endTime', event.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => removeInstructorAvailabilityRow(index)}
+                disabled={instructorForm.weeklyAvailability.length === 1}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <label className="checkbox-row">
+          <input
+            name="active"
+            type="checkbox"
+            checked={instructorForm.active}
+            onChange={(event) =>
+              setInstructorForm((current) => ({ ...current, active: event.target.checked }))
+            }
+          />
+          Instructor is active for booking
+        </label>
+
+        <div className="admin-actions">
+          <button type="submit" disabled={instructorLoading}>
+            {instructorLoading ? 'Saving...' : editingInstructorId ? 'Save employee' : 'Add instructor'}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={resetInstructorEditor}
+          >
+            {inline ? 'Cancel' : 'Reset form'}
+          </button>
+        </div>
+      </form>
+    );
+  }
 
   useEffect(() => {
     if (allAdminLocations.length === 0) {
@@ -2886,10 +3069,7 @@ export default function App() {
                                   <div className="admin-actions">
                                     <button
                                       type="button"
-                                      onClick={() => {
-                                        setAdminInstructorsView('editor');
-                                        startEditingInstructor(instructor);
-                                      }}
+                                      onClick={() => startEditingInstructor(instructor)}
                                     >
                                       {editingInstructorId === instructor._id ? 'Close editor' : 'Edit employee'}
                                     </button>
@@ -2917,6 +3097,7 @@ export default function App() {
                                       Use in override
                                     </button>
                                   </div>
+                                  {editingInstructorId === instructor._id ? renderInstructorEditor({ inline: true }) : null}
                                 </article>
                               );
                             })}
@@ -2929,163 +3110,11 @@ export default function App() {
                   {adminInstructorsView === 'editor' ? (
                     <section className="panel panel-emphasis bookings-panel">
                       <div className="panel-heading">
-                        <p className="panel-kicker">{editingInstructorId ? 'Edit Employee' : 'New Employee'}</p>
-                        <h2>{editingInstructorId ? 'Update Instructor Details' : 'Add a New Instructor'}</h2>
+                        <p className="panel-kicker">New Employee</p>
+                        <h2>Add a New Instructor</h2>
                       </div>
                       <p className="section-copy">Create a new team member, decide what they teach, where they work, and add their weekly teaching windows.</p>
-                      <form className="booking-form" onSubmit={handleInstructorSubmit}>
-                        <div className="form-grid-two">
-                          <label>
-                            Full name
-                            <input name="name" value={instructorForm.name} onChange={updateForm(setInstructorForm)} required />
-                          </label>
-                          <label>
-                            Title
-                            <input name="title" value={instructorForm.title} onChange={updateForm(setInstructorForm)} required />
-                          </label>
-                          <label>
-                            Email
-                            <input name="email" type="email" value={instructorForm.email} onChange={updateForm(setInstructorForm)} required />
-                          </label>
-                          <label>
-                            Phone
-                            <input name="phone" value={instructorForm.phone} onChange={updateForm(setInstructorForm)} required />
-                          </label>
-                        </div>
-
-                        <label>
-                          Bio
-                          <textarea name="bio" value={instructorForm.bio} onChange={updateForm(setInstructorForm)} rows="4" required />
-                        </label>
-
-                        <div className="form-split-section">
-                          <div>
-                            <strong className="section-subtitle">Services they can teach</strong>
-                            <div className="checkbox-pill-grid">
-                              {adminServices.map((service) => (
-                                <label key={service._id} className="checkbox-pill">
-                                  <input
-                                    type="checkbox"
-                                    checked={instructorForm.serviceIds.includes(service._id)}
-                                    onChange={() => toggleInstructorArrayField('serviceIds', service._id)}
-                                  />
-                                  <span>{service.name}</span>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div>
-                            <strong className="section-subtitle">Studio locations</strong>
-                            <div className="checkbox-pill-grid">
-                              {allAdminLocations.map((location) => (
-                                <label key={location.id} className="checkbox-pill">
-                                  <input
-                                    type="checkbox"
-                                    checked={instructorForm.locationIds.includes(location.id)}
-                                    onChange={() => toggleInstructorArrayField('locationIds', location.id)}
-                                  />
-                                  <span>{location.name}</span>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="availability-editor">
-                          <div className="section-heading-inline">
-                            <strong className="section-subtitle">Weekly availability</strong>
-                            <button type="button" className="secondary-button" onClick={addInstructorAvailabilityRow}>
-                              Add work window
-                            </button>
-                          </div>
-                          {instructorForm.weeklyAvailability.map((block, index) => (
-                            <div key={`${block.locationId}-${block.dayOfWeek}-${index}`} className="availability-row">
-                              <label>
-                                Day
-                                <select
-                                  value={block.dayOfWeek}
-                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'dayOfWeek', Number(event.target.value))}
-                                >
-                                  {weekdayOptions.map((day) => (
-                                    <option key={day.value} value={day.value}>
-                                      {day.label}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <label>
-                                Location
-                                <select
-                                  value={block.locationId}
-                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'locationId', event.target.value)}
-                                >
-                                  {(instructorForm.locationIds.length > 0
-                                    ? allAdminLocations.filter((location) => instructorForm.locationIds.includes(location.id))
-                                    : allAdminLocations
-                                  ).map((location) => (
-                                    <option key={location.id} value={location.id}>
-                                      {location.name}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <label>
-                                Start
-                                <input
-                                  type="time"
-                                  value={block.startTime}
-                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'startTime', event.target.value)}
-                                />
-                              </label>
-                              <label>
-                                End
-                                <input
-                                  type="time"
-                                  value={block.endTime}
-                                  onChange={(event) => updateInstructorAvailabilityRow(index, 'endTime', event.target.value)}
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                className="secondary-button"
-                                onClick={() => removeInstructorAvailabilityRow(index)}
-                                disabled={instructorForm.weeklyAvailability.length === 1}
-                              >
-                                Remove
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-
-                        <label className="checkbox-row">
-                          <input
-                            name="active"
-                            type="checkbox"
-                            checked={instructorForm.active}
-                            onChange={(event) =>
-                              setInstructorForm((current) => ({ ...current, active: event.target.checked }))
-                            }
-                          />
-                          Instructor is active for booking
-                        </label>
-
-                        <div className="admin-actions">
-                          <button type="submit" disabled={instructorLoading}>
-                            {instructorLoading ? 'Saving...' : editingInstructorId ? 'Save employee' : 'Add instructor'}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary-button"
-                            onClick={() => {
-                              setEditingInstructorId('');
-                              setInstructorForm(createEmptyInstructorForm(allAdminLocations[0]?.id || ''));
-                            }}
-                          >
-                            Reset form
-                          </button>
-                        </div>
-                      </form>
+                      {renderInstructorEditor()}
                     </section>
                   ) : null}
 
