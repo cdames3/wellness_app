@@ -1718,6 +1718,7 @@ app.use('/api', (req, res, next) => {
     [
       '/auth/register',
       '/auth/login',
+      '/auth/logout',
       '/auth/verify-email',
       '/auth/forgot-password',
       '/auth/reset-password',
