@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const helmet = require('helmet');
 const http = require('http');
 const mongoose = require('mongoose');
@@ -53,10 +54,21 @@ const SESSION_DURATION_MS = SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000;
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const DEMO_DATA_PATH = path.join(__dirname, 'data', 'demo-data.json');
-const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const defaultCorsOrigins = [
+  'https://www.wellnesscenterstudio.com',
+  'https://wellnesscenterstudio.com',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+const corsOrigins = Array.from(
+  new Set([
+    ...defaultCorsOrigins,
+    ...(process.env.CORS_ORIGINS || '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  ])
+);
 
 const studioLocations = [
   {
@@ -1693,25 +1705,12 @@ app.use((req, res, next) => {
   res.on('finish', () => logRequest(req, res, startedAt));
   next();
 });
-app.use((req, res, next) => {
-  const requestOrigin = req.headers.origin;
-  const allowedOrigin = requestOrigin && corsOrigins.includes(requestOrigin) ? requestOrigin : '';
-
-  if (allowedOrigin) {
-    res.header('Access-Control-Allow-Origin', allowedOrigin);
-  }
-
-  res.header('Vary', 'Origin');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token, X-CSRF-Token');
-
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-
-  return next();
-});
+app.use(cors({
+  origin: corsOrigins,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Auth-Token', 'X-CSRF-Token'],
+}));
 app.use(express.json({ limit: '1mb' }));
 app.use('/api', (req, res, next) => {
   if (

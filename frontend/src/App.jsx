@@ -921,15 +921,19 @@ export default function App() {
   }
 
   async function handleLogout() {
-    try {
-      await apiRequest('/auth/logout', { method: 'POST' });
-    } catch {
-      // Ignore logout transport errors and still clear the local app state.
-    }
-
-    clearSessionState();
     setMessage('');
     setError('');
+
+    try {
+      await apiRequest('/auth/logout', { method: 'POST' });
+      clearSessionState();
+      clearAuthQueryParams();
+      window.location.replace(window.location.pathname || '/');
+    } catch (logoutError) {
+      if (!handleSessionError(logoutError)) {
+        setError('We could not fully sign you out. Please try again.');
+      }
+    }
   }
 
   function updateForm(setter) {

@@ -1501,6 +1501,7 @@ button {
 .main-admin-spotlight {
   display: grid;
   gap: 16px;
+  padding-bottom: 22px;
 }
 
 .user-directory-grid {
@@ -1553,6 +1554,7 @@ button {
 .users-empty-state {
   margin: 0;
   color: var(--text-muted);
+  line-height: 1.65;
 }
 
 .instructor-summary-panel,
@@ -1589,7 +1591,9 @@ button {
 .inset-panel .section-copy,
 .inset-panel .booking-form,
 .inset-panel .availability-chip-grid,
-.inset-panel .service-list {
+.inset-panel .service-list,
+.inset-panel .user-directory-grid,
+.inset-panel .users-empty-state {
   padding-left: 22px;
   padding-right: 22px;
 }
@@ -1603,8 +1607,18 @@ button {
 }
 
 .inset-panel .booking-form,
-.inset-panel .service-list {
+.inset-panel .service-list,
+.inset-panel .user-directory-grid,
+.inset-panel .users-empty-state {
   padding-bottom: 22px;
+}
+
+.main-admin-spotlight > .user-role-row,
+.main-admin-spotlight > .employee-meta,
+.main-admin-spotlight > .admin-actions,
+.main-admin-spotlight > .inline-admin-user-editor {
+  padding-left: 22px;
+  padding-right: 22px;
 }
 
 .form-split-section {
@@ -1711,9 +1725,10 @@ button {
 .employee-meta {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   color: var(--text-muted);
   font-size: 0.9rem;
+  line-height: 1.55;
 }
 
 .tag-list {
@@ -1736,6 +1751,19 @@ button {
 .tag-chip-muted {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-soft);
+}
+
+.user-card .service-card-header {
+  align-items: flex-start;
+}
+
+.user-card .service-card-header h3 {
+  max-width: none;
+  line-height: 1.08;
+}
+
+.user-card .service-card-header span {
+  white-space: nowrap;
 }
 
 .employee-availability-list {
