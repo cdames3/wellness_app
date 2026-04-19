@@ -6,6 +6,7 @@ import pilatesImage from './assets/pilates.jpg';
 import spaImage from './assets/sauna-spa.jpg';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
+let csrfTokenCache = '';
 
 const emptyRegisterForm = {
   name: '',
@@ -318,6 +319,14 @@ function getCookieValue(name) {
   return decodeURIComponent(cookieMatch.slice(name.length + 1));
 }
 
+function setCsrfToken(token) {
+  csrfTokenCache = String(token || '').trim();
+}
+
+function clearCsrfToken() {
+  csrfTokenCache = '';
+}
+
 function formatTimeLabel(timeValue) {
   const [hourValue, minuteValue] = String(timeValue).split(':').map(Number);
   const period = hourValue >= 12 ? 'PM' : 'AM';
@@ -476,7 +485,9 @@ function generateServiceSlots(service, bookingDate, locationId, instructorDirect
 
 async function apiRequest(path, options = {}) {
   const method = String(options.method || 'GET').toUpperCase();
-  const csrfToken = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? '' : getCookieValue('wellness_csrf');
+  const csrfToken = ['GET', 'HEAD', 'OPTIONS'].includes(method)
+    ? ''
+    : csrfTokenCache || getCookieValue('wellness_csrf');
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...options,
     credentials: 'include',
@@ -488,6 +499,10 @@ async function apiRequest(path, options = {}) {
   });
 
   const data = await response.json().catch(() => ({}));
+
+  if (data?.csrfToken) {
+    setCsrfToken(data.csrfToken);
+  }
 
   if (!response.ok) {
     const requestError = new Error(data.message || 'Something went wrong.');
@@ -871,6 +886,7 @@ export default function App() {
   }
 
   function clearSessionState() {
+    clearCsrfToken();
     setUser(null);
     setAuthChecking(false);
     setView('login');
@@ -965,6 +981,9 @@ export default function App() {
         body: JSON.stringify(registerForm),
       });
 
+      if (data?.csrfToken) {
+        setCsrfToken(data.csrfToken);
+      }
       setUser(data.user);
       setRegisterForm(emptyRegisterForm);
       setView('app');
@@ -991,6 +1010,9 @@ export default function App() {
         body: JSON.stringify(loginForm),
       });
 
+      if (data?.csrfToken) {
+        setCsrfToken(data.csrfToken);
+      }
       setUser(data.user);
       setLoginForm(emptyLoginForm);
       setView('app');

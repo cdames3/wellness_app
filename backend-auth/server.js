@@ -1270,9 +1270,15 @@ function clearCsrfCookie(res) {
   }));
 }
 
+function issueCsrfToken(res) {
+  const csrfToken = randomUUID();
+  setCsrfCookie(res, csrfToken);
+  return csrfToken;
+}
+
 function issueSessionCookies(res, sessionToken) {
   setSessionCookie(res, sessionToken);
-  setCsrfCookie(res, randomUUID());
+  return issueCsrfToken(res);
 }
 
 function logRequest(req, res, startedAt) {
@@ -1927,7 +1933,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     });
 
     const token = await createSession(newUser);
-    issueSessionCookies(res, token);
+    const csrfToken = issueSessionCookies(res, token);
     let delivery = { delivered: false };
     try {
       delivery = await sendVerificationEmail(newUser);
@@ -1936,6 +1942,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     }
     return res.status(201).json({
       user: sanitizeUser(newUser),
+      csrfToken,
       message: delivery.delivered
         ? 'Account created. Check your email to verify your address.'
         : 'Account created. Check the backend terminal for your verification link in local development.',
@@ -1959,9 +1966,10 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     }
 
     const token = await createSession(user);
-    issueSessionCookies(res, token);
+    const csrfToken = issueSessionCookies(res, token);
     return res.json({
       user: sanitizeUser(user),
+      csrfToken,
       message: user.emailVerified ? '' : 'Your email is not verified yet. You can verify it from your profile page.',
     });
   } catch (error) {
@@ -2057,8 +2065,8 @@ app.post('/api/auth/verify-email', authLimiter, async (req, res) => {
 });
 
 app.get('/api/auth/me', requireAuth, async (req, res) => {
-  setCsrfCookie(res, randomUUID());
-  res.json({ user: req.user });
+  const csrfToken = issueCsrfToken(res);
+  res.json({ user: req.user, csrfToken });
 });
 
 app.post('/api/auth/logout', async (req, res) => {
