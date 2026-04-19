@@ -427,6 +427,89 @@ General deployment flow:
 4. configure the frontend API base URL
 5. redeploy both services
 
+## Live Hosting and Production Setup
+
+This project was successfully deployed as a live full-stack web application.
+
+The production hosting setup uses:
+
+- Render for both the frontend and backend deployment
+- MongoDB Atlas as the live database
+- a purchased custom domain connected to the deployed services
+
+### Render Deployment
+
+The application was deployed through Render using the root `render.yaml` Blueprint.
+
+The live setup separates the system into:
+
+- a frontend static site
+- a backend Node/Express web service
+
+This deployment model made it possible to:
+
+- host the Vite production build for the client-facing site
+- run the Express API as a separate live service
+- connect both services through environment variables
+- keep the frontend and backend deployment process organized and repeatable
+
+### MongoDB Atlas Integration
+
+MongoDB Atlas was used as the production database for the live app.
+
+Atlas stores:
+
+- users
+- services
+- instructors
+- bookings
+- reviews
+- sessions
+- auth tokens
+
+The production backend connects to Atlas through the `MONGO_URI` environment variable configured in Render.
+
+### Custom Domain Connection
+
+In addition to the default Render URLs, the project was connected to a custom domain to make the application feel more professional and presentation-ready.
+
+The domain setup included:
+
+- connecting `CNAME` records
+- connecting `A` records
+- pointing the appropriate frontend and backend traffic to the deployed Render services
+
+This allowed the project to move beyond the default generated hosting links and more closely resemble a real deployed product.
+
+### Production Environment Configuration
+
+The deployed app depends on production environment variables for:
+
+- MongoDB Atlas connection
+- frontend/backend URL coordination
+- admin bootstrap credentials
+- optional email delivery configuration
+
+Key production variables include:
+
+- backend `MONGO_URI`
+- backend `CORS_ORIGINS`
+- backend `APP_BASE_URL`
+- backend `ADMIN_EMAIL`
+- backend `ADMIN_PASSWORD`
+- frontend `VITE_API_BASE_URL`
+
+### Deployment Result
+
+By the end of the project, the system was not only working locally but also running as a live web application with:
+
+- a deployed frontend
+- a deployed backend API
+- a connected MongoDB Atlas database
+- a connected custom domain
+
+This made the final project feel much closer to a real-world wellness platform rather than only a local classroom prototype.
+
 ## Notes for School Demo Use
 
 This project intentionally mixes realistic behavior with a school-demo-friendly setup.

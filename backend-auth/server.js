@@ -32,6 +32,7 @@ const {
   validateProfilePayload,
   validateServicePayload,
   validateInstructorPayload,
+  validateAdminUserPayload,
   validateOverridePayload,
   validateBookingPayload,
   validateReviewPayload,
@@ -1126,7 +1127,43 @@ function sanitizeUser(user) {
     membershipNumber: user.membershipNumber,
     membershipActive: user.membershipActive,
     emailVerified: Boolean(user.emailVerified),
+    adminTitle: String(user.adminTitle || ''),
+    adminPermission: String(user.adminPermission || ''),
   };
+}
+
+function isMainAdmin(user) {
+  if (!user) {
+    return false;
+  }
+
+  return user.adminPermission === 'main-admin' || normalizeMembershipNumber(user.membershipNumber) === 'ADMIN-001';
+}
+
+function sanitizeManagedUser(user) {
+  return {
+    ...sanitizeUser(user),
+    createdAt: user.createdAt || null,
+    updatedAt: user.updatedAt || null,
+  };
+}
+
+function sortAdminUsers(left, right) {
+  const leftIsAdmin = left.role === 'admin';
+  const rightIsAdmin = right.role === 'admin';
+  if (leftIsAdmin !== rightIsAdmin) {
+    return leftIsAdmin ? -1 : 1;
+  }
+
+  const leftIsMain = isMainAdmin(left);
+  const rightIsMain = isMainAdmin(right);
+  if (leftIsMain !== rightIsMain) {
+    return leftIsMain ? -1 : 1;
+  }
+
+  const leftName = String(left.name || left.email || '').toLowerCase();
+  const rightName = String(right.name || right.email || '').toLowerCase();
+  return leftName.localeCompare(rightName);
 }
 
 function hashSessionToken(token) {
@@ -1470,8 +1507,28 @@ async function findUserById(id) {
     : memoryUsers.find((user) => user._id === id) || null;
 }
 
+async function listUsersForAdmin() {
+  const users = databaseReady ? await User.find().sort({ createdAt: 1 }) : [...memoryUsers];
+  return users.sort(sortAdminUsers);
+}
+
+async function generateAdminMembershipNumber() {
+  const existingUsers = await listUsersForAdmin();
+  const largestSequence = existingUsers.reduce((largest, user) => {
+    const match = normalizeMembershipNumber(user.membershipNumber).match(/^ADMIN-(\d+)$/);
+    if (!match) {
+      return largest;
+    }
+
+    return Math.max(largest, Number(match[1]));
+  }, 2);
+
+  return `ADMIN-${String(largestSequence + 1).padStart(3, '0')}`;
+}
+
 async function createUser(userData) {
   return databaseReady ? User.create(userData) : (() => {
+    const now = new Date().toISOString();
     const user = {
       _id: randomUUID(),
       ...userData,
@@ -1480,6 +1537,10 @@ async function createUser(userData) {
       membershipActive: userData.membershipActive ?? true,
       emailVerified: Boolean(userData.emailVerified),
       emailVerifiedAt: userData.emailVerifiedAt || null,
+      adminTitle: String(userData.adminTitle || ''),
+      adminPermission: String(userData.adminPermission || ''),
+      createdAt: userData.createdAt || now,
+      updatedAt: userData.updatedAt || now,
     };
     memoryUsers.push(user);
     persistDemoState();
@@ -1495,10 +1556,29 @@ async function updateUserById(id, updates) {
         if (!user) {
           return null;
         }
-        Object.assign(user, updates);
+        Object.assign(user, updates, {
+          updatedAt: new Date().toISOString(),
+        });
         persistDemoState();
         return user;
       })();
+}
+
+function refreshDemoSessionUsers(updatedUser) {
+  if (databaseReady || !updatedUser) {
+    return;
+  }
+
+  Array.from(sessions.entries()).forEach(([token, sessionRecord]) => {
+    if (String(sessionRecord.user?._id || '') !== String(updatedUser._id)) {
+      return;
+    }
+
+    sessions.set(token, {
+      ...sessionRecord,
+      user: sanitizeUser(updatedUser),
+    });
+  });
 }
 
 function getSessionToken(req) {
@@ -1599,6 +1679,14 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
+function requireMainAdmin(req, res, next) {
+  if (!isMainAdmin(req.user)) {
+    return res.status(403).json({ message: 'Only the main admin can manage admin permissions.' });
+  }
+
+  return next();
+}
+
 app.use(helmet());
 app.use((req, res, next) => {
   const startedAt = Date.now();
@@ -1684,12 +1772,21 @@ async function seedDemoUsers() {
       membershipActive: true,
       emailVerified: true,
       emailVerifiedAt: new Date(),
+      adminTitle: 'Main Admin',
+      adminPermission: 'main-admin',
     });
     console.log('Seeded demo admin account');
   } else if (!existingAdmin.emailVerified) {
     await updateUserById(existingAdmin._id, {
       emailVerified: true,
       emailVerifiedAt: existingAdmin.emailVerifiedAt || new Date(),
+      adminTitle: 'Main Admin',
+      adminPermission: 'main-admin',
+    });
+  } else {
+    await updateUserById(existingAdmin._id, {
+      adminTitle: existingAdmin.adminTitle || 'Main Admin',
+      adminPermission: 'main-admin',
     });
   }
 
@@ -1704,12 +1801,21 @@ async function seedDemoUsers() {
       membershipActive: true,
       emailVerified: true,
       emailVerifiedAt: new Date(),
+      adminTitle: '',
+      adminPermission: '',
     });
     console.log('Seeded demo member account');
   } else if (!existingMember.emailVerified) {
     await updateUserById(existingMember._id, {
       emailVerified: true,
       emailVerifiedAt: existingMember.emailVerifiedAt || new Date(),
+      adminTitle: '',
+      adminPermission: '',
+    });
+  } else {
+    await updateUserById(existingMember._id, {
+      adminTitle: '',
+      adminPermission: '',
     });
   }
 }
@@ -1717,27 +1823,43 @@ async function seedDemoUsers() {
 async function seedBootstrapAdmin() {
   const adminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
   const adminPassword = String(process.env.ADMIN_PASSWORD || '').trim();
+  const adminMembershipNumber = normalizeMembershipNumber(process.env.ADMIN_MEMBERSHIP_NUMBER || 'ADMIN-001');
+  const adminName = String(process.env.ADMIN_NAME || 'Wellness Admin').trim();
 
   if (!IS_PRODUCTION || !adminEmail || !adminPassword) {
     return;
   }
 
-  const existingAdmin = await findUserByEmail(adminEmail);
-  if (existingAdmin) {
-    return;
-  }
+  const existingAdminByEmail = await findUserByEmail(adminEmail);
+  const existingAdminByMembershipNumber = await findUserByMembershipNumber(adminMembershipNumber);
+  const allUsers = await listUsersForAdmin();
+  const existingMainAdmin = allUsers.find((user) => isMainAdmin(user));
+  const targetAdmin =
+    existingAdminByEmail ||
+    existingAdminByMembershipNumber ||
+    existingMainAdmin ||
+    null;
 
-  await createUser({
-    name: String(process.env.ADMIN_NAME || 'Wellness Admin').trim(),
+  const adminPayload = {
+    name: adminName,
     email: adminEmail,
     passwordHash: hashPassword(adminPassword),
     role: 'admin',
-    membershipNumber: normalizeMembershipNumber(process.env.ADMIN_MEMBERSHIP_NUMBER || 'ADMIN-001'),
+    membershipNumber: adminMembershipNumber,
     membershipActive: true,
     emailVerified: true,
-    emailVerifiedAt: new Date(),
-  });
+    emailVerifiedAt: targetAdmin?.emailVerifiedAt || new Date(),
+    adminTitle: 'Main Admin',
+    adminPermission: 'main-admin',
+  };
 
+  if (targetAdmin) {
+    await updateUserById(targetAdmin._id, adminPayload);
+    console.log('Updated production admin account from environment variables');
+    return;
+  }
+
+  await createUser(adminPayload);
   console.log('Seeded production admin account from environment variables');
 }
 
@@ -2147,6 +2269,15 @@ app.get('/api/admin/instructors', requireAuth, requireAdmin, async (req, res) =>
   }
 });
 
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const users = await listUsersForAdmin();
+    res.json(users.map(sanitizeManagedUser));
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load users right now.' });
+  }
+});
+
 app.post('/api/admin/services', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
     const { errors, value } = validateServicePayload(req.body);
@@ -2303,6 +2434,74 @@ app.patch('/api/admin/instructors/:id', adminLimiter, requireAuth, requireAdmin,
     return res.json(updatedInstructor);
   } catch (error) {
     return res.status(500).json({ message: 'Unable to update the instructor right now.' });
+  }
+});
+
+app.patch('/api/admin/users/:id', adminLimiter, requireAuth, requireAdmin, requireMainAdmin, async (req, res) => {
+  try {
+    const { errors, value } = validateAdminUserPayload(req.body);
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const targetUser = await findUserById(req.params.id);
+    if (!targetUser) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    const previousEmail = targetUser.email;
+    const action = value.action;
+    const updates = {};
+
+    if (action === 'promote') {
+      if (targetUser.role !== 'admin') {
+        updates.role = 'admin';
+        updates.membershipNumber = await generateAdminMembershipNumber();
+      }
+      updates.membershipActive = true;
+      updates.adminTitle = value.adminTitle;
+      updates.adminPermission = isMainAdmin(targetUser) ? 'main-admin' : 'admin';
+    }
+
+    if (action === 'update') {
+      if (targetUser.role !== 'admin') {
+        return res.status(400).json({ message: 'Only admins can receive an admin title update.' });
+      }
+
+      updates.adminTitle = value.adminTitle;
+    }
+
+    if (action === 'demote') {
+      if (isMainAdmin(targetUser)) {
+        return res.status(400).json({ message: 'The main admin cannot be demoted from this workspace.' });
+      }
+
+      if (String(targetUser._id) === String(req.user._id)) {
+        return res.status(400).json({ message: 'Use another admin account if you need to demote this profile.' });
+      }
+
+      updates.role = 'user';
+      updates.membershipNumber = await generateMembershipNumber();
+      updates.membershipActive = true;
+      updates.adminTitle = '';
+      updates.adminPermission = '';
+    }
+
+    const updatedUser = await updateUserById(req.params.id, updates);
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'User not found.' });
+    }
+
+    await syncBookingsForUser(updatedUser, previousEmail);
+    refreshDemoSessionUsers(updatedUser);
+
+    const users = await listUsersForAdmin();
+    return res.json({
+      user: sanitizeManagedUser(updatedUser),
+      users: users.map(sanitizeManagedUser),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to update that user right now.' });
   }
 });
 

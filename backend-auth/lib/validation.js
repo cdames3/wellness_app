@@ -424,6 +424,28 @@ function validateReviewPayload(payload = {}) {
   };
 }
 
+function validateAdminUserPayload(payload = {}) {
+  const action = normalizeText(payload.action, 20).toLowerCase();
+  const adminTitle = normalizeText(payload.adminTitle, 80);
+  const errors = [];
+
+  if (!['promote', 'update', 'demote'].includes(action)) {
+    errors.push('A valid admin user action is required.');
+  }
+
+  if (['promote', 'update'].includes(action) && adminTitle.length < 3) {
+    errors.push('Please provide a role title for this admin.');
+  }
+
+  return {
+    errors,
+    value: {
+      action,
+      adminTitle,
+    },
+  };
+}
+
 module.exports = {
   normalizeText,
   isValidEmail,
@@ -443,4 +465,5 @@ module.exports = {
   validateOverridePayload,
   validateBookingPayload,
   validateReviewPayload,
+  validateAdminUserPayload,
 };

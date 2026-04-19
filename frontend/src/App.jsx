@@ -66,6 +66,10 @@ const emptyReviewForm = {
   comment: '',
 };
 
+const emptyAdminUserForm = {
+  adminTitle: '',
+};
+
 const emptyOverrideForm = {
   serviceId: '',
   date: '',
@@ -503,11 +507,13 @@ export default function App() {
   const [adminServicesView, setAdminServicesView] = useState('overview');
   const [adminLocationsView, setAdminLocationsView] = useState('directory');
   const [adminInstructorsView, setAdminInstructorsView] = useState('overview');
+  const [adminUsersView, setAdminUsersView] = useState('overview');
   const [adminScheduleView, setAdminScheduleView] = useState('overview');
   const [services, setServices] = useState([]);
   const [adminServices, setAdminServices] = useState([]);
   const [instructors, setInstructors] = useState([]);
   const [adminInstructors, setAdminInstructors] = useState([]);
+  const [adminUsers, setAdminUsers] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [registerForm, setRegisterForm] = useState(emptyRegisterForm);
@@ -519,6 +525,7 @@ export default function App() {
   const [serviceForm, setServiceForm] = useState(emptyServiceForm);
   const [instructorForm, setInstructorForm] = useState(() => createEmptyInstructorForm());
   const [reviewForm, setReviewForm] = useState(emptyReviewForm);
+  const [adminUserForm, setAdminUserForm] = useState(emptyAdminUserForm);
   const [overrideForm, setOverrideForm] = useState(emptyOverrideForm);
   const [availabilityExplorer, setAvailabilityExplorer] = useState(emptyInstructorAvailabilityExplorer);
   const [loadingServices, setLoadingServices] = useState(true);
@@ -530,6 +537,7 @@ export default function App() {
   const [instructorLoading, setInstructorLoading] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [overrideLoading, setOverrideLoading] = useState(false);
+  const [adminUserLoading, setAdminUserLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [verificationToken, setVerificationToken] = useState('');
@@ -539,6 +547,8 @@ export default function App() {
   const [editingServiceId, setEditingServiceId] = useState('');
   const [editingServiceForm, setEditingServiceForm] = useState(emptyServiceForm);
   const [editingInstructorId, setEditingInstructorId] = useState('');
+  const [editingAdminUserId, setEditingAdminUserId] = useState('');
+  const [editingAdminUserMode, setEditingAdminUserMode] = useState('');
   const [selectedAdminLocationId, setSelectedAdminLocationId] = useState('');
   const [calendarMonthDate, setCalendarMonthDate] = useState(() => {
     const today = new Date();
@@ -629,6 +639,7 @@ export default function App() {
     if (user?.role === 'admin') {
       loadAdminServices();
       loadAdminInstructors();
+      loadAdminUsers();
     }
   }, [user?._id, user?.role]);
 
@@ -727,6 +738,7 @@ export default function App() {
       setAdminServicesView('overview');
       setAdminLocationsView('directory');
       setAdminInstructorsView('overview');
+      setAdminUsersView('overview');
       setAdminScheduleView('overview');
     }
   }, [user?._id, user?.role]);
@@ -750,7 +762,7 @@ export default function App() {
     }
 
     window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-  }, [user, view, memberPage, adminPage, adminServicesView, adminLocationsView, adminInstructorsView, adminScheduleView]);
+  }, [user, view, memberPage, adminPage, adminServicesView, adminLocationsView, adminInstructorsView, adminUsersView, adminScheduleView]);
 
   useEffect(() => {
     if (!message && !error) {
@@ -843,12 +855,28 @@ export default function App() {
     }
   }
 
+  async function loadAdminUsers() {
+    if (user?.role !== 'admin') {
+      return;
+    }
+
+    try {
+      const data = await apiRequest('/admin/users');
+      setAdminUsers(data);
+    } catch (loadError) {
+      if (!handleSessionError(loadError)) {
+        setError(loadError.message);
+      }
+    }
+  }
+
   function clearSessionState() {
     setUser(null);
     setAuthChecking(false);
     setView('login');
     setMemberPage('book');
     setAdminPage('services');
+    setAdminUsersView('overview');
     setBookings([]);
     setRecentBooking(null);
     setCreditBookingId('');
@@ -859,8 +887,12 @@ export default function App() {
     setVerificationToken('');
     setAuthTransition(null);
     setAdminInstructors([]);
+    setAdminUsers([]);
     setEditingInstructorId('');
+    setEditingAdminUserId('');
+    setEditingAdminUserMode('');
     setInstructorForm(createEmptyInstructorForm());
+    setAdminUserForm(emptyAdminUserForm);
     setAvailabilityExplorer(emptyInstructorAvailabilityExplorer);
   }
 
@@ -1853,6 +1885,14 @@ export default function App() {
     { label: 'Reviews', value: reviews.length || '00' },
     { label: 'Locations', value: locationCount || '07' },
   ];
+  const adminTeam = adminUsers.filter((item) => item.role === 'admin');
+  const memberUsers = adminUsers.filter((item) => item.role !== 'admin');
+  const mainAdminUser =
+    adminTeam.find(
+      (item) => item.adminPermission === 'main-admin' || String(item.membershipNumber || '').toUpperCase() === 'ADMIN-001'
+    ) || null;
+  const viewerIsMainAdmin =
+    user?.adminPermission === 'main-admin' || String(user?.membershipNumber || '').toUpperCase() === 'ADMIN-001';
   const memberPages = [
     { id: 'book', label: 'Book' },
     { id: 'schedule', label: 'My Schedule' },
@@ -1864,6 +1904,7 @@ export default function App() {
     { id: 'services', label: 'Services' },
     { id: 'locations', label: 'Locations' },
     { id: 'instructors', label: 'Instructors' },
+    { id: 'users', label: 'Users' },
     { id: 'schedule', label: 'Schedule' },
   ];
   const adminWorkspaceConfig = {
@@ -1918,6 +1959,23 @@ export default function App() {
         { label: 'Locations covered', value: new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size },
       ],
     },
+    users: {
+      kicker: 'Users Workspace',
+      title: 'Keep admin permissions and members in one place',
+      description: 'Review the main admin, promote members into the admin team, and update titles without stretching the page.',
+      value: adminUsersView,
+      setValue: setAdminUsersView,
+      options: [
+        { id: 'overview', label: 'Overview' },
+        { id: 'admins', label: 'Admins' },
+        { id: 'members', label: 'Members' },
+      ],
+      stats: [
+        { label: 'Users', value: adminUsers.length },
+        { label: 'Admins', value: adminTeam.length },
+        { label: 'Members', value: memberUsers.length },
+      ],
+    },
     schedule: {
       kicker: 'Schedule Workspace',
       title: 'Switch between overview, calendar, and attendance views',
@@ -1951,6 +2009,126 @@ export default function App() {
   function resetInstructorEditor() {
     setEditingInstructorId('');
     setInstructorForm(createEmptyInstructorForm(defaultInstructorLocationId));
+  }
+
+  function resetAdminUserEditor() {
+    setEditingAdminUserId('');
+    setEditingAdminUserMode('');
+    setAdminUserForm(emptyAdminUserForm);
+  }
+
+  function startEditingAdminUser(targetUser, mode) {
+    if (editingAdminUserId === targetUser._id && editingAdminUserMode === mode) {
+      resetAdminUserEditor();
+      return;
+    }
+
+    setEditingAdminUserId(targetUser._id);
+    setEditingAdminUserMode(mode);
+    setAdminUserForm({
+      adminTitle: targetUser.adminTitle || '',
+    });
+  }
+
+  async function handleAdminUserSubmit(event, targetUser) {
+    event.preventDefault();
+    setAdminUserLoading(true);
+    setMessage('');
+    setError('');
+
+    const action = editingAdminUserMode === 'promote' ? 'promote' : 'update';
+
+    try {
+      const data = await apiRequest(`/admin/users/${targetUser._id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          action,
+          adminTitle: adminUserForm.adminTitle,
+        }),
+      });
+
+      setAdminUsers(data.users || []);
+      if (data.user && user?._id === data.user._id) {
+        setUser(data.user);
+      }
+      resetAdminUserEditor();
+      setMessage(
+        action === 'promote'
+          ? `${targetUser.name} is now part of the admin team.`
+          : `${targetUser.name}'s admin role was updated.`
+      );
+    } catch (requestError) {
+      if (!handleSessionError(requestError)) {
+        setError(requestError.message);
+      }
+    } finally {
+      setAdminUserLoading(false);
+    }
+  }
+
+  async function handleAdminUserDemote(targetUser) {
+    const confirmed = window.confirm(`Move ${targetUser.name} back to the member list?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setAdminUserLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const data = await apiRequest(`/admin/users/${targetUser._id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'demote' }),
+      });
+
+      setAdminUsers(data.users || []);
+      if (data.user && user?._id === data.user._id) {
+        setUser(data.user);
+      }
+      resetAdminUserEditor();
+      setMessage(`${targetUser.name} has been moved back to the member list.`);
+    } catch (requestError) {
+      if (!handleSessionError(requestError)) {
+        setError(requestError.message);
+      }
+    } finally {
+      setAdminUserLoading(false);
+    }
+  }
+
+  function renderAdminUserEditor(targetUser) {
+    return (
+      <form className="booking-form inline-service-editor inline-admin-user-editor" onSubmit={(event) => handleAdminUserSubmit(event, targetUser)}>
+        <p className="form-note">
+          {editingAdminUserMode === 'promote'
+            ? 'Choose the admin title you want this team member to hold before they are promoted.'
+            : 'Update how this admin role should appear across the workspace.'}
+        </p>
+        <label>
+          Admin title
+          <input
+            name="adminTitle"
+            value={adminUserForm.adminTitle}
+            onChange={updateForm(setAdminUserForm)}
+            placeholder="Atlanta Manager"
+            required
+          />
+        </label>
+        <div className="admin-actions">
+          <button type="submit" disabled={adminUserLoading}>
+            {adminUserLoading
+              ? 'Saving...'
+              : editingAdminUserMode === 'promote'
+                ? 'Promote to admin'
+                : 'Save admin changes'}
+          </button>
+          <button type="button" className="secondary-button" onClick={resetAdminUserEditor}>
+            Cancel
+          </button>
+        </div>
+      </form>
+    );
   }
 
   function renderInstructorEditor({ inline = false } = {}) {
@@ -2173,14 +2351,6 @@ export default function App() {
                 <span>Pilates</span>
                 <span>Spa</span>
                 <span>Gym</span>
-              </div>
-              <div className="demo-credentials">
-                <p className="demo-note">
-                  Demo admin login: <strong>admin@wellness.local</strong> with password <strong>admin123</strong>
-                </p>
-                <p className="demo-note">
-                  Demo member login: <strong>vitoria.test@example.com</strong> or membership <strong>MEM-1001</strong> with password <strong>test1234</strong>
-                </p>
               </div>
             </div>
 
@@ -3399,6 +3569,229 @@ export default function App() {
                             )}
                           </div>
                         </div>
+                      </div>
+                    </section>
+                  ) : null}
+                </>
+              ) : null}
+
+              {adminPage === 'users' ? (
+                <>
+                  {adminUsersView === 'overview' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Users</p>
+                        <h2>Admin Team & Member Directory</h2>
+                      </div>
+                      <p className="section-copy">Keep your main admin, admin team, and member roster in one clean workspace before you change permissions.</p>
+                      <div className="users-page-columns">
+                        <div className="users-page-column">
+                          {mainAdminUser ? (
+                            <section className="panel inset-panel main-admin-spotlight">
+                              <div className="panel-heading compact-heading">
+                                <p className="panel-kicker">Main Admin</p>
+                                <h2>{mainAdminUser.name}</h2>
+                              </div>
+                              <p className="section-copy">
+                                This role controls promotions, demotions, and admin titles across the live studio workspace.
+                              </p>
+                              <div className="user-role-row user-role-row-padded">
+                                <span className="permission-chip permission-chip-main">Main admin</span>
+                                <span className="tag-chip tag-chip-muted">{mainAdminUser.membershipNumber}</span>
+                              </div>
+                              <div className="employee-meta">
+                                <span>{mainAdminUser.email}</span>
+                                <span>{mainAdminUser.adminTitle || 'Main Admin'}</span>
+                              </div>
+                              {viewerIsMainAdmin ? (
+                                <div className="admin-actions">
+                                  <button type="button" onClick={() => startEditingAdminUser(mainAdminUser, 'update')}>
+                                    {editingAdminUserId === mainAdminUser._id ? 'Close editor' : 'Edit role'}
+                                  </button>
+                                </div>
+                              ) : null}
+                              {editingAdminUserId === mainAdminUser._id ? renderAdminUserEditor(mainAdminUser) : null}
+                            </section>
+                          ) : null}
+
+                          <section className="panel inset-panel">
+                            <div className="panel-heading compact-heading">
+                              <p className="panel-kicker">Admin Team</p>
+                              <h2>Current Admins</h2>
+                            </div>
+                            <p className="section-copy">See every admin account, their title, and the role label members will recognize.</p>
+                            {adminTeam.length > 0 ? (
+                              <div className="user-directory-grid">
+                                {adminTeam.map((managedUser) => (
+                                  <article key={managedUser._id} className="service-card employee-card user-card">
+                                    <div className="service-card-header">
+                                      <h3>{managedUser.name}</h3>
+                                      <span>{managedUser.membershipNumber}</span>
+                                    </div>
+                                    <div className="user-role-row">
+                                      <span
+                                        className={`permission-chip${
+                                          managedUser.adminPermission === 'main-admin' ? ' permission-chip-main' : ''
+                                        }`}
+                                      >
+                                        {managedUser.adminPermission === 'main-admin' ? 'Main admin' : 'Admin'}
+                                      </span>
+                                      <span className="tag-chip tag-chip-muted">{managedUser.adminTitle || 'Admin'}</span>
+                                    </div>
+                                    <div className="employee-meta">
+                                      <span>{managedUser.email}</span>
+                                      <span>{managedUser.role === 'admin' ? 'Studio administrator' : 'Member'}</span>
+                                    </div>
+                                    {viewerIsMainAdmin ? (
+                                      <div className="admin-actions">
+                                        <button type="button" onClick={() => startEditingAdminUser(managedUser, 'update')}>
+                                          {editingAdminUserId === managedUser._id ? 'Close editor' : 'Edit role'}
+                                        </button>
+                                        {managedUser.adminPermission !== 'main-admin' ? (
+                                          <button
+                                            type="button"
+                                            className="secondary-button"
+                                            onClick={() => handleAdminUserDemote(managedUser)}
+                                          >
+                                            Demote
+                                          </button>
+                                        ) : null}
+                                      </div>
+                                    ) : null}
+                                    {editingAdminUserId === managedUser._id ? renderAdminUserEditor(managedUser) : null}
+                                  </article>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="users-empty-state">No admin users are listed yet.</p>
+                            )}
+                          </section>
+                        </div>
+
+                        <div className="users-page-column">
+                          <section className="panel inset-panel">
+                            <div className="panel-heading compact-heading">
+                              <p className="panel-kicker">Members</p>
+                              <h2>Member Directory</h2>
+                            </div>
+                            <p className="section-copy">Promote any client account into the admin team, or quickly review the current member roster.</p>
+                            {memberUsers.length > 0 ? (
+                              <div className="user-directory-grid">
+                                {memberUsers.map((managedUser) => (
+                                  <article key={managedUser._id} className="service-card employee-card user-card">
+                                    <div className="service-card-header">
+                                      <h3>{managedUser.name}</h3>
+                                      <span>{managedUser.membershipNumber}</span>
+                                    </div>
+                                    <div className="user-role-row">
+                                      <span className="permission-chip">Member</span>
+                                    </div>
+                                    <div className="employee-meta">
+                                      <span>{managedUser.email}</span>
+                                      <span>Client account</span>
+                                    </div>
+                                    {viewerIsMainAdmin ? (
+                                      <div className="admin-actions">
+                                        <button type="button" onClick={() => startEditingAdminUser(managedUser, 'promote')}>
+                                          {editingAdminUserId === managedUser._id ? 'Close editor' : 'Promote'}
+                                        </button>
+                                      </div>
+                                    ) : null}
+                                    {editingAdminUserId === managedUser._id ? renderAdminUserEditor(managedUser) : null}
+                                  </article>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="users-empty-state">No member accounts have been created yet.</p>
+                            )}
+                          </section>
+                        </div>
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {adminUsersView === 'admins' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Admins</p>
+                        <h2>Admin Team Directory</h2>
+                      </div>
+                      <p className="section-copy">Review all admin accounts, their titles, and adjust permissions without leaving the list.</p>
+                      <div className="user-directory-grid">
+                        {adminTeam.map((managedUser) => (
+                          <article key={managedUser._id} className="service-card employee-card user-card">
+                            <div className="service-card-header">
+                              <h3>{managedUser.name}</h3>
+                              <span>{managedUser.membershipNumber}</span>
+                            </div>
+                            <div className="user-role-row">
+                              <span
+                                className={`permission-chip${
+                                  managedUser.adminPermission === 'main-admin' ? ' permission-chip-main' : ''
+                                }`}
+                              >
+                                {managedUser.adminPermission === 'main-admin' ? 'Main admin' : 'Admin'}
+                              </span>
+                              <span className="tag-chip tag-chip-muted">{managedUser.adminTitle || 'Admin'}</span>
+                            </div>
+                            <div className="employee-meta">
+                              <span>{managedUser.email}</span>
+                              <span>{managedUser.role === 'admin' ? 'Studio administrator' : 'Member'}</span>
+                            </div>
+                            {viewerIsMainAdmin ? (
+                              <div className="admin-actions">
+                                <button type="button" onClick={() => startEditingAdminUser(managedUser, 'update')}>
+                                  {editingAdminUserId === managedUser._id ? 'Close editor' : 'Edit role'}
+                                </button>
+                                {managedUser.adminPermission !== 'main-admin' ? (
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => handleAdminUserDemote(managedUser)}
+                                  >
+                                    Demote
+                                  </button>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            {editingAdminUserId === managedUser._id ? renderAdminUserEditor(managedUser) : null}
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+
+                  {adminUsersView === 'members' ? (
+                    <section className="panel panel-emphasis bookings-panel">
+                      <div className="panel-heading">
+                        <p className="panel-kicker">Members</p>
+                        <h2>Client Accounts</h2>
+                      </div>
+                      <p className="section-copy">Promote a client into the admin team whenever you need a studio manager or location lead.</p>
+                      <div className="user-directory-grid">
+                        {memberUsers.map((managedUser) => (
+                          <article key={managedUser._id} className="service-card employee-card user-card">
+                            <div className="service-card-header">
+                              <h3>{managedUser.name}</h3>
+                              <span>{managedUser.membershipNumber}</span>
+                            </div>
+                            <div className="user-role-row">
+                              <span className="permission-chip">Member</span>
+                            </div>
+                            <div className="employee-meta">
+                              <span>{managedUser.email}</span>
+                              <span>Client account</span>
+                            </div>
+                            {viewerIsMainAdmin ? (
+                              <div className="admin-actions">
+                                <button type="button" onClick={() => startEditingAdminUser(managedUser, 'promote')}>
+                                  {editingAdminUserId === managedUser._id ? 'Close editor' : 'Promote'}
+                                </button>
+                              </div>
+                            ) : null}
+                            {editingAdminUserId === managedUser._id ? renderAdminUserEditor(managedUser) : null}
+                          </article>
+                        ))}
                       </div>
                     </section>
                   ) : null}

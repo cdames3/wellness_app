@@ -23,6 +23,16 @@ const userSchema = new mongoose.Schema(
       enum: ['admin', 'user'],
       default: 'user',
     },
+    adminTitle: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    adminPermission: {
+      type: String,
+      enum: ['', 'admin', 'main-admin'],
+      default: '',
+    },
     membershipNumber: {
       type: String,
       required: true,

@@ -250,6 +250,20 @@ button {
 
 .admin-workspace-stat-card {
   min-height: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-workspace-stat-card strong,
+.admin-workspace-stat-card span {
+  display: block;
+  margin: 0;
+}
+
+.admin-workspace-stat-card span {
+  color: var(--text-muted);
 }
 
 .admin-workspace-columns {
@@ -1423,9 +1437,17 @@ button {
   color: #f2d4a0;
 }
 
+.summary-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
 .summary-card strong {
+  display: block;
   font-size: 1.9rem;
   letter-spacing: -0.04em;
+  line-height: 1;
   color: #f5e4c9;
 }
 
@@ -1435,6 +1457,8 @@ button {
 }
 
 .summary-card span {
+  display: block;
+  margin-top: 0;
   color: var(--text-muted);
 }
 
@@ -1457,6 +1481,78 @@ button {
   gap: 22px;
   align-content: start;
   min-width: 0;
+}
+
+.users-page-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  gap: 24px;
+  margin-top: 22px;
+  align-items: start;
+}
+
+.users-page-column {
+  display: grid;
+  gap: 22px;
+  align-content: start;
+  min-width: 0;
+}
+
+.main-admin-spotlight {
+  display: grid;
+  gap: 16px;
+}
+
+.user-directory-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.user-card {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.user-role-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.user-role-row-padded {
+  margin-top: 4px;
+}
+
+.permission-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(214, 174, 108, 0.16);
+  color: #f7eddc;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.permission-chip-main {
+  background: rgba(214, 174, 108, 0.18);
+  color: #f2d4a0;
+}
+
+.inline-admin-user-editor {
+  margin-top: 12px;
+}
+
+.users-empty-state {
+  margin: 0;
+  color: var(--text-muted);
 }
 
 .instructor-summary-panel,
@@ -1953,6 +2049,7 @@ button {
   .availability-row,
   .admin-workspace-columns,
   .instructor-page-columns,
+  .users-page-columns,
   .compact-employee-grid {
     grid-template-columns: 1fr;
   }
