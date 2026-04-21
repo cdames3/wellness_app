@@ -1584,7 +1584,6 @@ button {
 .inset-panel .panel-heading,
 .inset-panel .section-copy,
 .inset-panel .booking-form,
-.inset-panel .availability-chip-grid,
 .inset-panel .service-list,
 .inset-panel .user-directory-grid,
 .inset-panel .users-empty-state {
@@ -1594,10 +1593,6 @@ button {
 
 .inset-panel .panel-heading {
   padding-top: 22px;
-}
-
-.inset-panel .availability-chip-grid {
-  padding-bottom: 22px;
 }
 
 .inset-panel .booking-form,
@@ -1947,27 +1942,6 @@ button {
   margin: 0;
   color: var(--text-muted);
   line-height: 1.55;
-}
-
-.availability-chip-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.availability-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 88px;
-  padding: 10px 12px;
-  border-radius: 999px;
-  background: rgba(214, 174, 108, 0.14);
-  border: 1px solid rgba(214, 174, 108, 0.14);
-  color: #f4dfba;
-  font-weight: 700;
-  font-size: 0.86rem;
 }
 
 .section-top-gap {

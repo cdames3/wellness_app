@@ -91,6 +91,11 @@ const studioLocations = [
     address: '2200 Avalon Boulevard, Alpharetta, GA 30009',
   },
 ];
+const validStudioLocationIds = new Set(studioLocations.map((location) => location.id));
+
+function isLiveStudioLocationId(locationId) {
+  return validStudioLocationIds.has(String(locationId || ''));
+}
 
 function slugifyInstructorName(value) {
   return String(value || '')
@@ -157,21 +162,48 @@ function withInstructorDefaults(instructor) {
   }
 
   const plainInstructor = typeof instructor.toObject === 'function' ? instructor.toObject() : { ...instructor };
+  const weeklyAvailability = Array.isArray(plainInstructor.weeklyAvailability)
+    ? plainInstructor.weeklyAvailability
+        .map((block) => ({
+          dayOfWeek: Number(block.dayOfWeek),
+          locationId: String(block.locationId),
+          startTime: String(block.startTime),
+          endTime: String(block.endTime),
+        }))
+        .filter((block) => isLiveStudioLocationId(block.locationId))
+    : [];
+  const locationIds = Array.from(
+    new Set([
+      ...(Array.isArray(plainInstructor.locationIds) ? plainInstructor.locationIds.map((item) => String(item)) : []),
+      ...weeklyAvailability.map((block) => String(block.locationId)),
+    ].filter(isLiveStudioLocationId))
+  );
 
   return {
     ...plainInstructor,
     email: String(plainInstructor.email || '').trim().toLowerCase(),
     active: plainInstructor.active !== false,
     serviceIds: Array.isArray(plainInstructor.serviceIds) ? plainInstructor.serviceIds.map((item) => String(item)) : [],
-    locationIds: Array.isArray(plainInstructor.locationIds) ? plainInstructor.locationIds.map((item) => String(item)) : [],
-    weeklyAvailability: Array.isArray(plainInstructor.weeklyAvailability)
-      ? plainInstructor.weeklyAvailability.map((block) => ({
-          dayOfWeek: Number(block.dayOfWeek),
-          locationId: String(block.locationId),
-          startTime: String(block.startTime),
-          endTime: String(block.endTime),
-        }))
-      : [],
+    locationIds,
+    weeklyAvailability,
+  };
+}
+
+function sanitizeInstructorForLiveLocations(instructorData) {
+  const weeklyAvailability = Array.isArray(instructorData.weeklyAvailability)
+    ? instructorData.weeklyAvailability.filter((block) => isLiveStudioLocationId(block.locationId))
+    : [];
+  const locationIds = Array.from(
+    new Set([
+      ...(Array.isArray(instructorData.locationIds) ? instructorData.locationIds : []),
+      ...weeklyAvailability.map((block) => block.locationId),
+    ].map((locationId) => String(locationId)).filter(isLiveStudioLocationId))
+  );
+
+  return {
+    ...instructorData,
+    locationIds,
+    weeklyAvailability,
   };
 }
 
@@ -814,12 +846,15 @@ async function listInstructors(includeInactive = false) {
   if (databaseReady) {
     const query = includeInactive ? {} : { active: true };
     const instructors = await Instructor.find(query).sort({ name: 1 });
-    return instructors.map(withInstructorDefaults);
+    return instructors
+      .map(withInstructorDefaults)
+      .filter((instructor) => instructor.locationIds.length > 0);
   }
 
   return memoryInstructors
     .filter((instructor) => (includeInactive ? true : instructor.active !== false))
     .map(withInstructorDefaults)
+    .filter((instructor) => instructor.locationIds.length > 0)
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -2344,28 +2379,24 @@ app.post('/api/admin/instructors', adminLimiter, requireAuth, requireAdmin, asyn
     if (errors.length > 0) {
       return sendValidationError(res, errors);
     }
+    const sanitizedValue = sanitizeInstructorForLiveLocations(value);
+    if (sanitizedValue.locationIds.length === 0 || sanitizedValue.weeklyAvailability.length === 0) {
+      return res.status(400).json({ message: 'Assign the instructor to at least one live studio location.' });
+    }
 
     const services = await listServices(true);
     const validServiceIds = new Set(services.map((service) => String(service._id)));
-    const validLocationIds = new Set(studioLocations.map((location) => location.id));
 
-    if (value.serviceIds.some((serviceId) => !validServiceIds.has(String(serviceId)))) {
+    if (sanitizedValue.serviceIds.some((serviceId) => !validServiceIds.has(String(serviceId)))) {
       return res.status(400).json({ message: 'One or more selected services are invalid.' });
     }
 
-    if (
-      value.locationIds.some((locationId) => !validLocationIds.has(String(locationId))) ||
-      value.weeklyAvailability.some((block) => !validLocationIds.has(String(block.locationId)))
-    ) {
-      return res.status(400).json({ message: 'One or more selected locations are invalid.' });
-    }
-
-    const existingInstructor = await findInstructorByEmail(value.email);
+    const existingInstructor = await findInstructorByEmail(sanitizedValue.email);
     if (existingInstructor) {
       return res.status(409).json({ message: 'An instructor with that email already exists.' });
     }
 
-    const instructor = await createInstructor(value);
+    const instructor = await createInstructor(sanitizedValue);
     return res.status(201).json(instructor);
   } catch (error) {
     return res.status(500).json({ message: 'Unable to create the instructor right now.' });
@@ -2383,28 +2414,24 @@ app.patch('/api/admin/instructors/:id', adminLimiter, requireAuth, requireAdmin,
     if (!instructor) {
       return res.status(404).json({ message: 'Instructor not found.' });
     }
+    const sanitizedValue = sanitizeInstructorForLiveLocations(value);
+    if (sanitizedValue.locationIds.length === 0 || sanitizedValue.weeklyAvailability.length === 0) {
+      return res.status(400).json({ message: 'Assign the instructor to at least one live studio location.' });
+    }
 
     const services = await listServices(true);
     const validServiceIds = new Set(services.map((service) => String(service._id)));
-    const validLocationIds = new Set(studioLocations.map((location) => location.id));
 
-    if (value.serviceIds.some((serviceId) => !validServiceIds.has(String(serviceId)))) {
+    if (sanitizedValue.serviceIds.some((serviceId) => !validServiceIds.has(String(serviceId)))) {
       return res.status(400).json({ message: 'One or more selected services are invalid.' });
     }
 
-    if (
-      value.locationIds.some((locationId) => !validLocationIds.has(String(locationId))) ||
-      value.weeklyAvailability.some((block) => !validLocationIds.has(String(block.locationId)))
-    ) {
-      return res.status(400).json({ message: 'One or more selected locations are invalid.' });
-    }
-
-    const existingInstructor = await findInstructorByEmail(value.email);
+    const existingInstructor = await findInstructorByEmail(sanitizedValue.email);
     if (existingInstructor && String(existingInstructor._id) !== String(req.params.id)) {
       return res.status(409).json({ message: 'Another instructor already uses that email.' });
     }
 
-    const updatedInstructor = await updateInstructorById(req.params.id, value);
+    const updatedInstructor = await updateInstructorById(req.params.id, sanitizedValue);
     return res.json(updatedInstructor);
   } catch (error) {
     return res.status(500).json({ message: 'Unable to update the instructor right now.' });

@@ -109,13 +109,6 @@ function createEmptyInstructorForm(defaultLocationId = '') {
   };
 }
 
-const emptyInstructorAvailabilityExplorer = {
-  instructorId: '',
-  serviceId: '',
-  locationId: '',
-  date: '',
-};
-
 const servicePresentation = {
   'Pilates Flow': {
     eyebrow: 'Strength & Flow',
@@ -565,7 +558,6 @@ export default function App() {
   const [adminUserForm, setAdminUserForm] = useState(emptyAdminUserForm);
   const [newAdminForm, setNewAdminForm] = useState(emptyNewAdminForm);
   const [overrideForm, setOverrideForm] = useState(emptyOverrideForm);
-  const [availabilityExplorer, setAvailabilityExplorer] = useState(emptyInstructorAvailabilityExplorer);
   const [loadingServices, setLoadingServices] = useState(true);
   const [loadingBookings, setLoadingBookings] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
@@ -731,30 +723,6 @@ export default function App() {
       return createEmptyInstructorForm(defaultLocationId);
     });
   }, [adminServices]);
-
-  useEffect(() => {
-    if (adminInstructors.length === 0 || adminServices.length === 0) {
-      return;
-    }
-
-    setAvailabilityExplorer((current) => {
-      const nextInstructor = adminInstructors.find((instructor) => instructor._id === current.instructorId) || adminInstructors[0];
-      const nextService =
-        adminServices.find((service) =>
-          (nextInstructor.serviceIds || []).map(String).includes(String(service._id))
-        ) || adminServices[0];
-      const nextLocation =
-        (nextService?.locations || []).find((location) => (nextInstructor.locationIds || []).includes(location.id)) ||
-        nextService?.locations?.[0];
-
-      return {
-        instructorId: nextInstructor?._id || '',
-        serviceId: current.serviceId || nextService?._id || '',
-        locationId: current.locationId || nextLocation?.id || '',
-        date: current.date,
-      };
-    });
-  }, [adminInstructors, adminServices]);
 
   useEffect(() => {
     if (user?.role === 'user') {
@@ -924,7 +892,6 @@ export default function App() {
     setInstructorForm(createEmptyInstructorForm());
     setAdminUserForm(emptyAdminUserForm);
     setNewAdminForm(emptyNewAdminForm);
-    setAvailabilityExplorer(emptyInstructorAvailabilityExplorer);
   }
 
   function clearAuthQueryParams() {
@@ -1655,6 +1622,10 @@ export default function App() {
         .map((location) => [location.id, location])
     ).values()
   );
+  const liveAdminLocationIds = new Set(allAdminLocations.map((location) => location.id));
+  const liveAdminInstructors = adminInstructors.filter((instructor) =>
+    (instructor.locationIds || []).some((locationId) => liveAdminLocationIds.has(locationId))
+  );
   const selectedAdminLocation =
     allAdminLocations.find((location) => location.id === selectedAdminLocationId) ||
     allAdminLocations[0] ||
@@ -1709,36 +1680,6 @@ export default function App() {
   const selectedOverrideSlot = overrideSlots.find((slot) => slot.time === overrideForm.time) || null;
   const overrideInstructorOptions =
     selectedOverrideSlot?.availableInstructorOptions || overrideInstructorPool.map((instructor) => instructor.name);
-  const selectedAvailabilityInstructor =
-    adminInstructors.find((instructor) => instructor._id === availabilityExplorer.instructorId) || null;
-  const availabilityServiceOptions = selectedAvailabilityInstructor
-    ? adminServices.filter((service) =>
-        (selectedAvailabilityInstructor.serviceIds || []).map(String).includes(String(service._id))
-      )
-    : adminServices;
-  const selectedAvailabilityService =
-    availabilityServiceOptions.find((service) => service._id === availabilityExplorer.serviceId) ||
-    availabilityServiceOptions[0] ||
-    null;
-  const availabilityLocationOptions = selectedAvailabilityService
-    ? (selectedAvailabilityService.locations || []).filter((location) =>
-        !selectedAvailabilityInstructor ||
-        (selectedAvailabilityInstructor.locationIds || []).includes(location.id)
-      )
-    : [];
-  const selectedAvailabilityLocation =
-    availabilityLocationOptions.find((location) => location.id === availabilityExplorer.locationId) ||
-    availabilityLocationOptions[0] ||
-    null;
-  const instructorAvailabilitySlots =
-    selectedAvailabilityInstructor && selectedAvailabilityService && availabilityExplorer.date
-      ? generateServiceSlots(
-          selectedAvailabilityService,
-          availabilityExplorer.date,
-          selectedAvailabilityLocation?.id,
-          adminInstructors.filter((instructor) => instructor.active !== false)
-        ).filter((slot) => slot.instructorOptions.includes(selectedAvailabilityInstructor.name))
-      : [];
   const activeAdminBookings = bookings.filter((booking) => !['Cancelled', 'Rejected'].includes(booking.status));
   const cancelledAdminBookings = bookings.filter((booking) => booking.status === 'Cancelled');
   const attendedAdminBookings = activeAdminBookings.filter((booking) => booking.attendanceStatus === 'Attended');
@@ -1930,19 +1871,25 @@ export default function App() {
     instructors: {
       kicker: 'Instructor Workspace',
       title: 'Keep the team tools focused',
-      description: 'Use one selector to move between the roster, employee editor, availability lookup, and one-time coverage changes.',
+      description: 'Use one selector to move between the roster, employee editor, and one-time coverage changes.',
       value: adminInstructorsView,
       setValue: setAdminInstructorsView,
       options: [
         { id: 'overview', label: 'Team overview' },
         { id: 'editor', label: 'Employee editor' },
-        { id: 'availability', label: 'Availability lookup' },
         { id: 'coverage', label: 'Coverage changes' },
       ],
       stats: [
-        { label: 'Team members', value: adminInstructors.length },
-        { label: 'Bookable', value: adminInstructors.filter((instructor) => instructor.active !== false).length },
-        { label: 'Locations covered', value: new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size },
+        { label: 'Team members', value: liveAdminInstructors.length },
+        { label: 'Bookable', value: liveAdminInstructors.filter((instructor) => instructor.active !== false).length },
+        {
+          label: 'Locations covered',
+          value: new Set(
+            liveAdminInstructors
+              .flatMap((instructor) => instructor.locationIds || [])
+              .filter((locationId) => liveAdminLocationIds.has(locationId))
+          ).size,
+        },
       ],
     },
     users: {
@@ -3191,18 +3138,22 @@ export default function App() {
                           <div className="booking-insight-row">
                             <article className="booking-helper-card booking-helper-card-compact">
                               <strong>Team members</strong>
-                              <span>{adminInstructors.length} instructors in the directory</span>
+                              <span>{liveAdminInstructors.length} instructors in the directory</span>
                             </article>
                             <article className="booking-helper-card booking-helper-card-compact">
                               <strong>Active coverage</strong>
                               <span>
-                                {adminInstructors.filter((instructor) => instructor.active !== false).length} currently bookable instructors
+                                {liveAdminInstructors.filter((instructor) => instructor.active !== false).length} currently bookable instructors
                               </span>
                             </article>
                             <article className="booking-helper-card booking-helper-card-compact">
                               <strong>Locations covered</strong>
                               <span>
-                                {new Set(adminInstructors.flatMap((instructor) => instructor.locationIds || [])).size} studio locations
+                                {new Set(
+                                  liveAdminInstructors
+                                    .flatMap((instructor) => instructor.locationIds || [])
+                                    .filter((locationId) => liveAdminLocationIds.has(locationId))
+                                ).size} studio locations
                               </span>
                             </article>
                           </div>
@@ -3215,7 +3166,7 @@ export default function App() {
                           </div>
                           <p className="section-copy">Review the whole employee roster, current assignments, and weekly work windows without leaving the instructor workspace.</p>
                           <div className="employee-overview-grid compact-employee-grid">
-                            {adminInstructors.map((instructor) => {
+                            {liveAdminInstructors.map((instructor) => {
                               const instructorServices = adminServices.filter((service) =>
                                 (instructor.serviceIds || []).map(String).includes(String(service._id))
                               );
@@ -3250,7 +3201,10 @@ export default function App() {
                                     ))}
                                   </div>
                                   <div className="employee-availability-list">
-                                    {(instructor.weeklyAvailability || []).slice(0, 4).map((block, index) => {
+                                    {(instructor.weeklyAvailability || [])
+                                      .filter((block) => liveAdminLocationIds.has(block.locationId))
+                                      .slice(0, 4)
+                                      .map((block, index) => {
                                       const locationName =
                                         allAdminLocations.find((location) => location.id === block.locationId)?.name || block.locationId;
                                       const dayLabel =
@@ -3261,8 +3215,10 @@ export default function App() {
                                         </span>
                                       );
                                     })}
-                                    {(instructor.weeklyAvailability || []).length > 4 ? (
-                                      <span>+{instructor.weeklyAvailability.length - 4} more availability windows</span>
+                                    {(instructor.weeklyAvailability || []).filter((block) => liveAdminLocationIds.has(block.locationId)).length > 4 ? (
+                                      <span>
+                                        +{(instructor.weeklyAvailability || []).filter((block) => liveAdminLocationIds.has(block.locationId)).length - 4} more availability windows
+                                      </span>
                                     ) : null}
                                   </div>
                                   <div className="admin-actions">
@@ -3314,108 +3270,6 @@ export default function App() {
                       </div>
                       <p className="section-copy">Create a new team member, decide what they teach, where they work, and add their weekly teaching windows.</p>
                       {renderInstructorEditor()}
-                    </section>
-                  ) : null}
-
-                  {adminInstructorsView === 'availability' ? (
-                    <section className="panel bookings-panel">
-                      <div className="panel-heading">
-                        <p className="panel-kicker">Availability</p>
-                        <h2>Book By Instructor</h2>
-                      </div>
-                      <p className="section-copy">See exactly when a team member is available to teach at a chosen location before you answer member questions or set an override.</p>
-                      <div className="booking-form">
-                        <div className="form-grid-two">
-                          <label>
-                            Instructor
-                            <select
-                              value={availabilityExplorer.instructorId}
-                              onChange={(event) => {
-                                const nextInstructor = adminInstructors.find((instructor) => instructor._id === event.target.value);
-                                const nextService = adminServices.find((service) =>
-                                  (nextInstructor?.serviceIds || []).map(String).includes(String(service._id))
-                                );
-                                const nextLocation = (nextService?.locations || []).find((location) =>
-                                  (nextInstructor?.locationIds || []).includes(location.id)
-                                );
-                                setAvailabilityExplorer((current) => ({
-                                  ...current,
-                                  instructorId: event.target.value,
-                                  serviceId: nextService?._id || '',
-                                  locationId: nextLocation?.id || '',
-                                }));
-                              }}
-                            >
-                              {adminInstructors.map((instructor) => (
-                                <option key={instructor._id} value={instructor._id}>
-                                  {instructor.name}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            Service
-                            <select
-                              value={selectedAvailabilityService?._id || ''}
-                              onChange={(event) => {
-                                const nextService = adminServices.find((service) => service._id === event.target.value);
-                                setAvailabilityExplorer((current) => ({
-                                  ...current,
-                                  serviceId: event.target.value,
-                                  locationId: nextService?.locations?.[0]?.id || '',
-                                }));
-                              }}
-                            >
-                              {availabilityServiceOptions.map((service) => (
-                                <option key={service._id} value={service._id}>
-                                  {service.name}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            Location
-                            <select
-                              value={selectedAvailabilityLocation?.id || ''}
-                              onChange={(event) =>
-                                setAvailabilityExplorer((current) => ({ ...current, locationId: event.target.value }))
-                              }
-                            >
-                              {availabilityLocationOptions.map((location) => (
-                                <option key={location.id} value={location.id}>
-                                  {location.name}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label>
-                            Date
-                            <input
-                              type="date"
-                              value={availabilityExplorer.date}
-                              min={new Date().toISOString().slice(0, 10)}
-                              onChange={(event) =>
-                                setAvailabilityExplorer((current) => ({ ...current, date: event.target.value }))
-                              }
-                            />
-                          </label>
-                        </div>
-                      </div>
-                      <div className="availability-chip-grid">
-                        {availabilityExplorer.date ? (
-                          instructorAvailabilitySlots.length > 0 ? (
-                            instructorAvailabilitySlots.map((slot) => (
-                              <span key={slot.time} className="availability-chip">
-                                {slot.label}
-                              </span>
-                            ))
-                          ) : (
-                            <p className="section-copy">No available class times for that instructor on the selected date.</p>
-                          )
-                        ) : (
-                          <p className="section-copy">Pick a date to see that instructor’s teaching windows.</p>
-                        )}
-                      </div>
                     </section>
                   ) : null}
 
