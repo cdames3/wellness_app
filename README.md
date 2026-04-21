@@ -36,7 +36,6 @@ A member can:
 - register without manually entering a membership number
 - receive an automatically generated membership number
 - sign in with either email or membership number
-- verify their email address
 - request a password reset
 - browse services by price, type, and rating
 - choose a location for a booking
@@ -67,6 +66,9 @@ An admin can:
 - cancel member bookings when needed
 - mark attendance after a class has passed
 - mark members as no-shows
+- manage the admin team from the Users page
+- add new admins directly with a name, email, and role description
+- edit or demote existing admin accounts
 
 ## Core Application Features
 
@@ -77,11 +79,10 @@ The app supports:
 - account registration
 - secure login
 - cookie-based session handling
-- email verification
 - forgot-password flow
 - password reset with expiring tokens
 
-Membership numbers are generated automatically at registration time. Emails are normalized to lowercase so members can log in more reliably.
+Membership numbers are generated automatically at registration time. Emails are normalized to lowercase so members can log in more reliably. Email verification was removed from the current build so new members can register and use the app immediately.
 
 ## 2. Booking System
 
@@ -99,14 +100,11 @@ Bookings are created as immediately booked rather than waiting for admin approva
 
 ## 3. Location-Based Scheduling
 
-The project supports seven studio locations:
+The project supports four studio locations:
 
 - Atlanta
 - Sandy Springs
 - Peachtree Corners
-- Lawrenceville
-- Duluth
-- Roswell
 - Alpharetta
 
 Each location can have different instructor coverage and different class times.
@@ -214,7 +212,6 @@ The application includes several important protections:
 - rate limiting protects auth, booking, and admin write actions
 - request validation is used for major payloads
 - password reset tokens expire automatically
-- email verification tokens expire automatically
 - password resets invalidate existing sessions
 
 For demo payments, the system intentionally avoids storing full card numbers.
@@ -223,10 +220,7 @@ For demo payments, the system intentionally avoids storing full card numbers.
 
 When MongoDB is unavailable in development, the backend can fall back to demo mode. In that case, local data is saved under `backend-auth/data/` so demo users and bookings are not lost every time the backend restarts.
 
-In development, demo accounts can be seeded automatically:
-
-- Admin: `admin@wellness.local` / `admin123`
-- Member: `vitoria.test@example.com` / `test1234`
+In development, demo users can be seeded automatically when `SEED_DEMO_USERS=true`. Production admin credentials are configured through environment variables instead of being hard-coded into the app.
 
 For production deployment, demo mode and demo-user seeding are disabled by default in the Render configuration.
 
@@ -316,7 +310,7 @@ wellness_app/
   Session storage model for persisted auth sessions.
 
 - `backend-auth/models/AuthToken.js`
-  Verification and password reset token model.
+  Password reset token model.
 
 - `backend-auth/lib/validation.js`
   Shared request validation utilities.
@@ -325,7 +319,7 @@ wellness_app/
   Reusable booking and no-show business logic used by tests.
 
 - `backend-auth/lib/mailer.js`
-  Email delivery helper for verification and password reset flows.
+  Email delivery helper for password reset flows.
 
 ## Local Development Setup
 

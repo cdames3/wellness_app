@@ -27,7 +27,6 @@ const {
   isValidDateInput,
   validateRegisterPayload,
   validateLoginPayload,
-  validateTokenPayload,
   validateForgotPasswordPayload,
   validateResetPasswordPayload,
   validateProfilePayload,
@@ -51,12 +50,12 @@ const SESSION_COOKIE_NAME = 'wellness_session';
 const CSRF_COOKIE_NAME = 'wellness_csrf';
 const SESSION_DURATION_DAYS = Math.max(1, Number(process.env.SESSION_DURATION_DAYS || 7));
 const SESSION_DURATION_MS = SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000;
-const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
 const DEMO_DATA_PATH = path.join(__dirname, 'data', 'demo-data.json');
 const defaultCorsOrigins = [
   'https://www.wellnesscenterstudio.com',
   'https://wellnesscenterstudio.com',
+  'https://wellness-frontend-jge3.onrender.com',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
 ];
@@ -85,21 +84,6 @@ const studioLocations = [
     id: 'peachtree-corners',
     name: 'Peachtree Corners',
     address: '4980 Medlock Bridge Road, Peachtree Corners, GA 30092',
-  },
-  {
-    id: 'lawrenceville',
-    name: 'Lawrenceville',
-    address: '875 Grayson Highway, Lawrenceville, GA 30046',
-  },
-  {
-    id: 'duluth',
-    name: 'Duluth',
-    address: '3200 Satellite Boulevard, Duluth, GA 30096',
-  },
-  {
-    id: 'roswell',
-    name: 'Roswell',
-    address: '1145 Canton Street, Roswell, GA 30075',
   },
   {
     id: 'alpharetta',
@@ -665,28 +649,36 @@ function withServiceDefaults(service) {
     },
     locations: Array.isArray(plainService.locations) && plainService.locations.length > 0
       ? (() => {
+          const allowedLocationIds = new Set(studioLocations.map((location) => location.id));
           const fallbackLocationsById = new Map(
             fallback.locations.map((location) => [location.id, location])
           );
-          return plainService.locations.map((location) => {
-            const fallbackLocation = fallbackLocationsById.get(location.id) || {};
-            return {
-              ...fallbackLocation,
-              ...location,
-              instructors:
-                Array.isArray(location.instructors) && location.instructors.length > 0
-                  ? location.instructors
-                  : Array.isArray(fallbackLocation.instructors)
-                    ? fallbackLocation.instructors
-                    : [],
-              timeSlots:
-                Array.isArray(location.timeSlots) && location.timeSlots.length > 0
-                  ? location.timeSlots
-                  : Array.isArray(fallbackLocation.timeSlots)
-                    ? fallbackLocation.timeSlots
-                    : [],
-            };
-          });
+          const normalizedLocations = plainService.locations
+            .filter((location) => allowedLocationIds.has(String(location.id || '')))
+            .map((location) => {
+              const fallbackLocation = fallbackLocationsById.get(location.id) || {};
+              return {
+                ...fallbackLocation,
+                ...location,
+                instructors:
+                  Array.isArray(location.instructors) && location.instructors.length > 0
+                    ? location.instructors
+                    : Array.isArray(fallbackLocation.instructors)
+                      ? fallbackLocation.instructors
+                      : [],
+                timeSlots:
+                  Array.isArray(location.timeSlots) && location.timeSlots.length > 0
+                    ? location.timeSlots
+                    : Array.isArray(fallbackLocation.timeSlots)
+                      ? fallbackLocation.timeSlots
+                      : [],
+              };
+            });
+          const normalizedLocationIds = new Set(normalizedLocations.map((location) => location.id));
+          const missingFallbackLocations = fallback.locations.filter(
+            (location) => !normalizedLocationIds.has(location.id)
+          );
+          return [...normalizedLocations, ...missingFallbackLocations];
         })()
       : fallback.locations,
     scheduleOverrides: Array.isArray(plainService.scheduleOverrides) ? plainService.scheduleOverrides : [],
@@ -1446,19 +1438,6 @@ async function consumeAuthToken(token, type) {
   return record;
 }
 
-async function sendVerificationEmail(user) {
-  const token = await createAuthToken(user._id, 'email-verification', EMAIL_VERIFICATION_TTL_MS);
-  const actionUrl = getAuthActionUrl('verify-email', token);
-
-  return sendAppEmail({
-    to: user.email,
-    subject: 'Verify your Wellness Center Studio email',
-    text: `Welcome to Wellness Center Studio. Verify your email by opening this link: ${actionUrl}`,
-    html: `<p>Welcome to Wellness Center Studio.</p><p><a href="${actionUrl}">Verify your email address</a> to finish setting up your account.</p>`,
-    actionUrl,
-  });
-}
-
 async function sendPasswordResetEmail(user) {
   const token = await createAuthToken(user._id, 'password-reset', PASSWORD_RESET_TTL_MS);
   const actionUrl = getAuthActionUrl('reset-password', token);
@@ -1517,6 +1496,10 @@ async function generateMembershipNumber() {
   } while (await findUserByMembershipNumber(candidate));
 
   return candidate;
+}
+
+function generateTemporaryPassword() {
+  return `Admin${Math.floor(100000 + Math.random() * 900000)}`;
 }
 
 async function findUserById(id) {
@@ -1725,7 +1708,7 @@ app.use('/api', (req, res, next) => {
       '/auth/register',
       '/auth/login',
       '/auth/logout',
-      '/auth/verify-email',
+      '/auth/csrf',
       '/auth/forgot-password',
       '/auth/reset-password',
       '/health',
@@ -1859,6 +1842,18 @@ async function seedBootstrapAdmin() {
     adminPermission: 'main-admin',
   };
 
+  if (
+    existingAdminByEmail &&
+    existingAdminByMembershipNumber &&
+    String(existingAdminByEmail._id) !== String(existingAdminByMembershipNumber._id)
+  ) {
+    await updateUserById(existingAdminByMembershipNumber._id, {
+      membershipNumber: await generateAdminMembershipNumber(),
+      adminPermission: existingAdminByMembershipNumber.adminPermission === 'main-admin' ? 'admin' : existingAdminByMembershipNumber.adminPermission,
+      adminTitle: existingAdminByMembershipNumber.adminTitle || 'Studio Admin',
+    });
+  }
+
   if (targetAdmin) {
     await updateUserById(targetAdmin._id, adminPayload);
     console.log('Updated production admin account from environment variables');
@@ -1928,24 +1923,16 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
       membershipNumber,
       membershipActive: true,
       role: 'user',
-      emailVerified: false,
-      emailVerifiedAt: null,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
     });
 
     const token = await createSession(newUser);
     const csrfToken = issueSessionCookies(res, token);
-    let delivery = { delivered: false };
-    try {
-      delivery = await sendVerificationEmail(newUser);
-    } catch (emailError) {
-      logServerError('verification-email-send-failed', emailError, { userId: String(newUser._id) });
-    }
     return res.status(201).json({
       user: sanitizeUser(newUser),
       csrfToken,
-      message: delivery.delivered
-        ? 'Account created. Check your email to verify your address.'
-        : 'Account created. Check the backend terminal for your verification link in local development.',
+      message: `Account created. Your membership number is ${membershipNumber}.`,
     });
   } catch (error) {
     return res.status(500).json({ message: 'Unable to create your account right now.' });
@@ -1970,7 +1957,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     return res.json({
       user: sanitizeUser(user),
       csrfToken,
-      message: user.emailVerified ? '' : 'Your email is not verified yet. You can verify it from your profile page.',
+      message: '',
     });
   } catch (error) {
     return res.status(500).json({ message: 'Unable to log in right now.' });
@@ -2031,42 +2018,14 @@ app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
   }
 });
 
-app.post('/api/auth/verify-email', authLimiter, async (req, res) => {
-  try {
-    const { errors, value } = validateTokenPayload(req.body, 'verification token');
-    if (errors.length > 0) {
-      return sendValidationError(res, errors);
-    }
-
-    const tokenRecord = await consumeAuthToken(value.token, 'email-verification');
-    if (!tokenRecord) {
-      return res.status(400).json({ message: 'That verification link is invalid or has expired.' });
-    }
-
-    const userId = databaseReady ? tokenRecord.user : tokenRecord.userId;
-    const user = await findUserById(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'Account not found for that verification link.' });
-    }
-
-    const updatedUser = await updateUserById(user._id, {
-      emailVerified: true,
-      emailVerifiedAt: new Date(),
-    });
-    await deleteAuthTokensForUser(user._id, 'email-verification');
-
-    return res.json({
-      message: 'Your email has been verified.',
-      user: updatedUser ? sanitizeUser(updatedUser) : null,
-    });
-  } catch (error) {
-    return res.status(500).json({ message: 'Unable to verify your email right now.' });
-  }
-});
-
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   const csrfToken = issueCsrfToken(res);
   res.json({ user: req.user, csrfToken });
+});
+
+app.get('/api/auth/csrf', requireAuth, async (req, res) => {
+  const csrfToken = issueCsrfToken(res);
+  res.json({ csrfToken });
 });
 
 app.post('/api/auth/logout', async (req, res) => {
@@ -2079,33 +2038,6 @@ app.post('/api/auth/logout', async (req, res) => {
     clearSessionCookie(res);
     clearCsrfCookie(res);
     return res.status(500).json({ message: 'Unable to log out right now.' });
-  }
-});
-
-app.post('/api/auth/request-verification', authLimiter, requireAuth, async (req, res) => {
-  try {
-    const fullUser = await findUserById(req.user._id);
-    if (!fullUser) {
-      return res.status(404).json({ message: 'User account not found.' });
-    }
-
-    if (fullUser.emailVerified) {
-      return res.json({ message: 'Your email address is already verified.' });
-    }
-
-    let delivery = { delivered: false };
-    try {
-      delivery = await sendVerificationEmail(fullUser);
-    } catch (emailError) {
-      logServerError('verification-email-send-failed', emailError, { userId: String(fullUser._id) });
-    }
-    return res.json({
-      message: delivery.delivered
-        ? 'Verification email sent. Please check your inbox.'
-        : 'Verification link generated. Check the backend terminal in local development.',
-    });
-  } catch (error) {
-    return res.status(500).json({ message: 'Unable to send a verification email right now.' });
   }
 });
 
@@ -2143,8 +2075,6 @@ app.patch('/api/auth/me', authLimiter, requireAuth, async (req, res) => {
       }
 
       updates.email = email.trim().toLowerCase();
-      updates.emailVerified = false;
-      updates.emailVerifiedAt = null;
     }
 
     if (typeof newPassword === 'string' && newPassword.trim()) {
@@ -2182,14 +2112,6 @@ app.patch('/api/auth/me', authLimiter, requireAuth, async (req, res) => {
       await deleteSessionsForUser(req.user._id);
       const nextSessionToken = await createSession(updatedUser);
       issueSessionCookies(res, nextSessionToken);
-    }
-
-    if (updates.email) {
-      try {
-        await sendVerificationEmail(updatedUser);
-      } catch (emailError) {
-        logServerError('verification-email-send-failed', emailError, { userId: String(updatedUser._id) });
-      }
     }
 
     const token = getSessionToken(req);
@@ -2286,6 +2208,47 @@ app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+app.post('/api/admin/users/admins', adminLimiter, requireAuth, requireAdmin, requireMainAdmin, async (req, res) => {
+  try {
+    const { errors, value } = validateAdminUserPayload({
+      ...req.body,
+      action: 'create',
+    });
+    if (errors.length > 0) {
+      return sendValidationError(res, errors);
+    }
+
+    const existingUser = await findUserByEmail(value.email);
+    if (existingUser) {
+      return res.status(409).json({ message: 'That email already has an account. Use a different email for the new admin.' });
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const adminUser = await createUser({
+      name: value.name,
+      email: value.email,
+      passwordHash: hashPassword(temporaryPassword),
+      role: 'admin',
+      membershipNumber: await generateAdminMembershipNumber(),
+      membershipActive: true,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
+      adminTitle: value.adminTitle,
+      adminPermission: 'admin',
+    });
+    const users = await listUsersForAdmin();
+
+    return res.status(201).json({
+      user: sanitizeManagedUser(adminUser),
+      users: users.map(sanitizeManagedUser),
+      temporaryPassword,
+      message: `${adminUser.name} was added as an admin. Temporary password: ${temporaryPassword}`,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Unable to create that admin right now.' });
+  }
+});
+
 app.post('/api/admin/services', adminLimiter, requireAuth, requireAdmin, async (req, res) => {
   try {
     const { errors, value } = validateServicePayload(req.body);
@@ -2350,15 +2313,18 @@ app.patch('/api/admin/services/:id', adminLimiter, requireAuth, requireAdmin, as
     }
 
     if (Array.isArray(locations)) {
-      updates.locations = locations.map((location) => ({
-        id: String(location.id),
-        name: String(location.name),
-        address: String(location.address),
-        instructors: Array.isArray(location.instructors) ? location.instructors.map((item) => String(item).trim()).filter(Boolean) : [],
-        timeSlots: Array.isArray(location.timeSlots)
-          ? location.timeSlots.map((item) => String(item).trim()).filter((item) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(item))
-          : [],
-      }));
+      const validLocationIds = new Set(studioLocations.map((location) => location.id));
+      updates.locations = locations
+        .filter((location) => validLocationIds.has(String(location.id)))
+        .map((location) => ({
+          id: String(location.id),
+          name: String(location.name),
+          address: String(location.address),
+          instructors: Array.isArray(location.instructors) ? location.instructors.map((item) => String(item).trim()).filter(Boolean) : [],
+          timeSlots: Array.isArray(location.timeSlots)
+            ? location.timeSlots.map((item) => String(item).trim()).filter((item) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(item))
+            : [],
+        }));
     }
 
     const updatedService = await updateServiceById(req.params.id, updates);
@@ -2461,22 +2427,25 @@ app.patch('/api/admin/users/:id', adminLimiter, requireAuth, requireAdmin, requi
     const action = value.action;
     const updates = {};
 
-    if (action === 'promote') {
-      if (targetUser.role !== 'admin') {
-        updates.role = 'admin';
-        updates.membershipNumber = await generateAdminMembershipNumber();
-      }
-      updates.membershipActive = true;
-      updates.adminTitle = value.adminTitle;
-      updates.adminPermission = isMainAdmin(targetUser) ? 'main-admin' : 'admin';
-    }
-
     if (action === 'update') {
       if (targetUser.role !== 'admin') {
         return res.status(400).json({ message: 'Only admins can receive an admin title update.' });
       }
 
+      if (value.name) {
+        updates.name = value.name;
+      }
+
+      if (value.email && value.email !== String(targetUser.email || '').toLowerCase()) {
+        const existingUser = await findUserByEmail(value.email);
+        if (existingUser && String(existingUser._id) !== String(targetUser._id)) {
+          return res.status(409).json({ message: 'That email is already being used by another account.' });
+        }
+        updates.email = value.email;
+      }
+
       updates.adminTitle = value.adminTitle;
+      updates.adminPermission = isMainAdmin(targetUser) ? 'main-admin' : 'admin';
     }
 
     if (action === 'demote') {

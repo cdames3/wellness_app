@@ -68,6 +68,14 @@ const emptyReviewForm = {
 };
 
 const emptyAdminUserForm = {
+  name: '',
+  email: '',
+  adminTitle: '',
+};
+
+const emptyNewAdminForm = {
+  name: '',
+  email: '',
   adminTitle: '',
 };
 
@@ -306,19 +314,6 @@ function padTime(value) {
   return String(value).padStart(2, '0');
 }
 
-function getCookieValue(name) {
-  const cookieMatch = document.cookie
-    .split(';')
-    .map((segment) => segment.trim())
-    .find((segment) => segment.startsWith(`${name}=`));
-
-  if (!cookieMatch) {
-    return '';
-  }
-
-  return decodeURIComponent(cookieMatch.slice(name.length + 1));
-}
-
 function setCsrfToken(token) {
   csrfTokenCache = String(token || '').trim();
 }
@@ -484,17 +479,19 @@ function generateServiceSlots(service, bookingDate, locationId, instructorDirect
 }
 
 async function apiRequest(path, options = {}) {
-  const method = String(options.method || 'GET').toUpperCase();
-  const csrfToken = ['GET', 'HEAD', 'OPTIONS'].includes(method)
-    ? ''
-    : csrfTokenCache || getCookieValue('wellness_csrf');
+  const { __csrfRetry = false, ...requestOptions } = options;
+  const method = String(requestOptions.method || 'GET').toUpperCase();
+  const safeMethod = ['GET', 'HEAD', 'OPTIONS'].includes(method);
+  const csrfExemptPaths = ['/auth/register', '/auth/login', '/auth/logout', '/auth/forgot-password', '/auth/reset-password'];
+  const needsCsrf = !safeMethod && !csrfExemptPaths.includes(path);
+  const csrfToken = needsCsrf ? csrfTokenCache || await requestCsrfToken() : '';
   const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...options,
+    ...requestOptions,
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-      ...(options.headers || {}),
+      ...(requestOptions.headers || {}),
     },
   });
 
@@ -505,12 +502,37 @@ async function apiRequest(path, options = {}) {
   }
 
   if (!response.ok) {
+    if (response.status === 403 && needsCsrf && !__csrfRetry) {
+      clearCsrfToken();
+      await requestCsrfToken();
+      return apiRequest(path, { ...options, __csrfRetry: true });
+    }
+
     const requestError = new Error(data.message || 'Something went wrong.');
     requestError.status = response.status;
     throw requestError;
   }
 
   return data;
+}
+
+async function requestCsrfToken() {
+  const response = await fetch(`${apiBaseUrl}/auth/csrf`, {
+    credentials: 'include',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok || !data?.csrfToken) {
+    const requestError = new Error(data.message || 'Unable to refresh the security token.');
+    requestError.status = response.status;
+    throw requestError;
+  }
+
+  setCsrfToken(data.csrfToken);
+  return data.csrfToken;
 }
 
 export default function App() {
@@ -541,6 +563,7 @@ export default function App() {
   const [instructorForm, setInstructorForm] = useState(() => createEmptyInstructorForm());
   const [reviewForm, setReviewForm] = useState(emptyReviewForm);
   const [adminUserForm, setAdminUserForm] = useState(emptyAdminUserForm);
+  const [newAdminForm, setNewAdminForm] = useState(emptyNewAdminForm);
   const [overrideForm, setOverrideForm] = useState(emptyOverrideForm);
   const [availabilityExplorer, setAvailabilityExplorer] = useState(emptyInstructorAvailabilityExplorer);
   const [loadingServices, setLoadingServices] = useState(true);
@@ -555,7 +578,6 @@ export default function App() {
   const [adminUserLoading, setAdminUserLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [verificationToken, setVerificationToken] = useState('');
   const [authTransition, setAuthTransition] = useState(null);
   const [recentBooking, setRecentBooking] = useState(null);
   const [creditBookingId, setCreditBookingId] = useState('');
@@ -626,21 +648,14 @@ export default function App() {
     }
 
     const params = new URLSearchParams(window.location.search);
-    const mode = params.get('mode');
     const token = params.get('token') || '';
 
-    if (mode === 'reset-password' && token) {
+    if (params.get('mode') === 'reset-password' && token) {
       setResetPasswordForm((current) => ({
         ...current,
         token,
       }));
       setView('reset-password');
-      return;
-    }
-
-    if (mode === 'verify-email' && token) {
-      setVerificationToken(token);
-      setView('verify-email');
     }
   }, [authChecking]);
 
@@ -900,7 +915,6 @@ export default function App() {
     setEditingServiceForm(emptyServiceForm);
     setForgotPasswordForm(emptyForgotPasswordForm);
     setResetPasswordForm(emptyResetPasswordForm);
-    setVerificationToken('');
     setAuthTransition(null);
     setAdminInstructors([]);
     setAdminUsers([]);
@@ -909,6 +923,7 @@ export default function App() {
     setEditingAdminUserMode('');
     setInstructorForm(createEmptyInstructorForm());
     setAdminUserForm(emptyAdminUserForm);
+    setNewAdminForm(emptyNewAdminForm);
     setAvailabilityExplorer(emptyInstructorAvailabilityExplorer);
   }
 
@@ -1085,57 +1100,6 @@ export default function App() {
     }
   }
 
-  async function handleVerifyEmail() {
-    if (!verificationToken) {
-      setError('That verification link is missing a token.');
-      return;
-    }
-
-    setAuthLoading(true);
-    setMessage('');
-    setError('');
-
-    try {
-      const data = await apiRequest('/auth/verify-email', {
-        method: 'POST',
-        body: JSON.stringify({ token: verificationToken }),
-      });
-
-      clearAuthQueryParams();
-      setVerificationToken('');
-      if (data.user && user && data.user._id === user._id) {
-        setUser(data.user);
-        setView('app');
-      } else {
-        setView(user ? 'app' : 'login');
-      }
-      setMessage(data.message || 'Your email has been verified.');
-    } catch (requestError) {
-      setError(requestError.message);
-    } finally {
-      setAuthLoading(false);
-    }
-  }
-
-  async function handleRequestVerification() {
-    setProfileLoading(true);
-    setMessage('');
-    setError('');
-
-    try {
-      const data = await apiRequest('/auth/request-verification', {
-        method: 'POST',
-      });
-      setMessage(data.message || 'Verification email sent.');
-    } catch (requestError) {
-      if (!handleSessionError(requestError)) {
-        setError(requestError.message);
-      }
-    } finally {
-      setProfileLoading(false);
-    }
-  }
-
   async function handleBookingSubmit(event) {
     event.preventDefault();
     setBookingLoading(true);
@@ -1228,11 +1192,7 @@ export default function App() {
         newPassword: '',
         confirmPassword: '',
       }));
-      setMessage(
-        data.user.emailVerified
-          ? 'Profile updated successfully.'
-          : 'Profile updated. Please verify your email address.'
-      );
+      setMessage('Profile updated successfully.');
     } catch (profileError) {
       if (!handleSessionError(profileError)) {
         setError(profileError.message);
@@ -1988,7 +1948,7 @@ export default function App() {
     users: {
       kicker: 'Users Workspace',
       title: 'Keep admin permissions and members in one place',
-      description: 'Review the main admin, promote members into the admin team, and update titles without stretching the page.',
+      description: 'Review admin access, add new admins directly, and keep client accounts separated from staff permissions.',
       value: adminUsersView,
       setValue: setAdminUsersView,
       options: [
@@ -2052,8 +2012,34 @@ export default function App() {
     setEditingAdminUserId(targetUser._id);
     setEditingAdminUserMode(mode);
     setAdminUserForm({
+      name: targetUser.name || '',
+      email: targetUser.email || '',
       adminTitle: targetUser.adminTitle || '',
     });
+  }
+
+  async function handleCreateAdminSubmit(event) {
+    event.preventDefault();
+    setAdminUserLoading(true);
+    setMessage('');
+    setError('');
+
+    try {
+      const data = await apiRequest('/admin/users/admins', {
+        method: 'POST',
+        body: JSON.stringify(newAdminForm),
+      });
+
+      setAdminUsers(data.users || []);
+      setNewAdminForm(emptyNewAdminForm);
+      setMessage(data.message || `${newAdminForm.name} was added as an admin.`);
+    } catch (requestError) {
+      if (!handleSessionError(requestError)) {
+        setError(requestError.message);
+      }
+    } finally {
+      setAdminUserLoading(false);
+    }
   }
 
   async function handleAdminUserSubmit(event, targetUser) {
@@ -2062,13 +2048,13 @@ export default function App() {
     setMessage('');
     setError('');
 
-    const action = editingAdminUserMode === 'promote' ? 'promote' : 'update';
-
     try {
       const data = await apiRequest(`/admin/users/${targetUser._id}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          action,
+          action: 'update',
+          name: adminUserForm.name,
+          email: adminUserForm.email,
           adminTitle: adminUserForm.adminTitle,
         }),
       });
@@ -2078,11 +2064,7 @@ export default function App() {
         setUser(data.user);
       }
       resetAdminUserEditor();
-      setMessage(
-        action === 'promote'
-          ? `${targetUser.name} is now part of the admin team.`
-          : `${targetUser.name}'s admin role was updated.`
-      );
+      setMessage(`${targetUser.name}'s admin role was updated.`);
     } catch (requestError) {
       if (!handleSessionError(requestError)) {
         setError(requestError.message);
@@ -2123,31 +2105,90 @@ export default function App() {
     }
   }
 
+  function renderCreateAdminForm() {
+    if (!viewerIsMainAdmin) {
+      return null;
+    }
+
+    return (
+      <section className="panel inset-panel add-admin-panel">
+        <div className="panel-heading compact-heading">
+          <p className="panel-kicker">Add Admin</p>
+          <h2>Add a New Admin</h2>
+        </div>
+        <p className="section-copy">
+          Create a staff login directly with an admin membership number. The system will generate the next ADMIN number automatically.
+        </p>
+        <form className="booking-form add-admin-form" onSubmit={handleCreateAdminSubmit}>
+          <div className="form-grid-two">
+            <label>
+              Admin name
+              <input name="name" value={newAdminForm.name} onChange={updateForm(setNewAdminForm)} placeholder="Atlanta Manager" required />
+            </label>
+            <label>
+              Admin email
+              <input name="email" type="email" value={newAdminForm.email} onChange={updateForm(setNewAdminForm)} placeholder="admin@example.com" required />
+            </label>
+          </div>
+          <label>
+            Admin description
+            <input
+              name="adminTitle"
+              value={newAdminForm.adminTitle}
+              onChange={updateForm(setNewAdminForm)}
+              placeholder="Sandy Springs Manager"
+              required
+            />
+          </label>
+          <button type="submit" disabled={adminUserLoading}>
+            {adminUserLoading ? 'Adding admin...' : 'Add admin'}
+          </button>
+        </form>
+      </section>
+    );
+  }
+
   function renderAdminUserEditor(targetUser) {
     return (
       <form className="booking-form inline-service-editor inline-admin-user-editor" onSubmit={(event) => handleAdminUserSubmit(event, targetUser)}>
         <p className="form-note">
-          {editingAdminUserMode === 'promote'
-            ? 'Choose the admin title you want this team member to hold before they are promoted.'
-            : 'Update how this admin role should appear across the workspace.'}
+          Update this admin account and how the role should appear across the workspace.
         </p>
+        <div className="form-grid-two">
+          <label>
+            Admin name
+            <input
+              name="name"
+              value={adminUserForm.name}
+              onChange={updateForm(setAdminUserForm)}
+              placeholder="Atlanta Manager"
+              required
+            />
+          </label>
+          <label>
+            Admin email
+            <input
+              name="email"
+              type="email"
+              value={adminUserForm.email}
+              onChange={updateForm(setAdminUserForm)}
+              required
+            />
+          </label>
+        </div>
         <label>
-          Admin title
+          Admin description
           <input
             name="adminTitle"
             value={adminUserForm.adminTitle}
             onChange={updateForm(setAdminUserForm)}
-            placeholder="Atlanta Manager"
+            placeholder="Sandy Springs Manager"
             required
           />
         </label>
         <div className="admin-actions">
           <button type="submit" disabled={adminUserLoading}>
-            {adminUserLoading
-              ? 'Saving...'
-              : editingAdminUserMode === 'promote'
-                ? 'Promote to admin'
-                : 'Save admin changes'}
+            {adminUserLoading ? 'Saving...' : 'Save admin changes'}
           </button>
           <button type="button" className="secondary-button" onClick={resetAdminUserEditor}>
             Cancel
@@ -2447,21 +2488,6 @@ export default function App() {
             </nav>
           ) : null}
 
-          {user && !user.emailVerified ? (
-            <section className="panel verification-banner">
-              <div>
-                <p className="panel-kicker">Email Verification</p>
-                <h2>Verify your email to protect your account.</h2>
-                <p className="section-copy">
-                  We’ve added secure account verification and password recovery. Send yourself a fresh verification link any time.
-                </p>
-              </div>
-              <button type="button" className="secondary-button" onClick={handleRequestVerification} disabled={profileLoading}>
-                {profileLoading ? 'Sending...' : 'Send verification email'}
-              </button>
-            </section>
-          ) : null}
-
           {isAdmin && activeAdminWorkspace ? (
             <section className="panel panel-emphasis bookings-panel admin-workspace-toolbar">
               <div className="admin-workspace-topline">
@@ -2546,10 +2572,9 @@ export default function App() {
             <div className="auth-switcher">
               <button
                 type="button"
-                className={view === 'login' || view === 'forgot-password' || view === 'reset-password' || view === 'verify-email' ? 'tab-button active' : 'tab-button'}
+                className={view === 'login' || view === 'forgot-password' || view === 'reset-password' ? 'tab-button active' : 'tab-button'}
                 onClick={() => {
                   clearAuthQueryParams();
-                  setVerificationToken('');
                   setResetPasswordForm(emptyResetPasswordForm);
                   setView('login');
                 }}
@@ -2561,7 +2586,6 @@ export default function App() {
                 className={view === 'register' ? 'tab-button active' : 'tab-button'}
                 onClick={() => {
                   clearAuthQueryParams();
-                  setVerificationToken('');
                   setResetPasswordForm(emptyResetPasswordForm);
                   setView('register');
                 }}
@@ -2666,27 +2690,6 @@ export default function App() {
                   Back to sign in
                 </button>
               </form>
-            ) : view === 'verify-email' ? (
-              <div className="booking-form auth-info-card">
-                <h2>Verify Your Email</h2>
-                <p className="form-note">
-                  Finish setting up your account by confirming your email address from the secure link we sent you.
-                </p>
-                <button type="button" onClick={handleVerifyEmail} disabled={authLoading}>
-                  {authLoading ? 'Verifying...' : 'Verify email'}
-                </button>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => {
-                    clearAuthQueryParams();
-                    setVerificationToken('');
-                    setView(user ? 'app' : 'login');
-                  }}
-                >
-                  Back
-                </button>
-              </div>
             ) : (
               <form className="booking-form" onSubmit={handleLogin}>
                 <h2>Sign In</h2>
@@ -3609,7 +3612,7 @@ export default function App() {
                         <p className="panel-kicker">Users</p>
                         <h2>Admin Team & Member Directory</h2>
                       </div>
-                      <p className="section-copy">Keep your main admin, admin team, and member roster in one clean workspace before you change permissions.</p>
+                      <p className="section-copy">Keep the admin team and client roster separated so role changes stay intentional.</p>
                       <div className="users-page-columns">
                         <div className="users-page-column">
                           {mainAdminUser ? (
@@ -3619,7 +3622,7 @@ export default function App() {
                                 <h2>{mainAdminUser.name}</h2>
                               </div>
                               <p className="section-copy">
-                                This role controls promotions, demotions, and admin titles across the live studio workspace.
+                                This role controls admin access, demotions, and admin descriptions across the live studio workspace.
                               </p>
                               <div className="user-role-row user-role-row-padded">
                                 <span className="permission-chip permission-chip-main">Main admin</span>
@@ -3695,12 +3698,13 @@ export default function App() {
                         </div>
 
                         <div className="users-page-column">
+                          {renderCreateAdminForm()}
                           <section className="panel inset-panel">
                             <div className="panel-heading compact-heading">
                               <p className="panel-kicker">Members</p>
                               <h2>Member Directory</h2>
                             </div>
-                            <p className="section-copy">Promote any client account into the admin team, or quickly review the current member roster.</p>
+                            <p className="section-copy">Review client accounts without mixing member profiles into staff permissions.</p>
                             {memberUsers.length > 0 ? (
                               <div className="user-directory-grid">
                                 {memberUsers.map((managedUser) => (
@@ -3716,14 +3720,6 @@ export default function App() {
                                       <span>{managedUser.email}</span>
                                       <span>Client account</span>
                                     </div>
-                                    {viewerIsMainAdmin ? (
-                                      <div className="admin-actions">
-                                        <button type="button" onClick={() => startEditingAdminUser(managedUser, 'promote')}>
-                                          {editingAdminUserId === managedUser._id ? 'Close editor' : 'Promote'}
-                                        </button>
-                                      </div>
-                                    ) : null}
-                                    {editingAdminUserId === managedUser._id ? renderAdminUserEditor(managedUser) : null}
                                   </article>
                                 ))}
                               </div>
@@ -3743,6 +3739,7 @@ export default function App() {
                         <h2>Admin Team Directory</h2>
                       </div>
                       <p className="section-copy">Review all admin accounts, their titles, and adjust permissions without leaving the list.</p>
+                      {renderCreateAdminForm()}
                       <div className="user-directory-grid">
                         {adminTeam.map((managedUser) => (
                           <article key={managedUser._id} className="service-card employee-card user-card">
@@ -3793,7 +3790,7 @@ export default function App() {
                         <p className="panel-kicker">Members</p>
                         <h2>Client Accounts</h2>
                       </div>
-                      <p className="section-copy">Promote a client into the admin team whenever you need a studio manager or location lead.</p>
+                      <p className="section-copy">Review client accounts and keep staff access managed from the Admins section.</p>
                       <div className="user-directory-grid">
                         {memberUsers.map((managedUser) => (
                           <article key={managedUser._id} className="service-card employee-card user-card">
@@ -3808,14 +3805,6 @@ export default function App() {
                               <span>{managedUser.email}</span>
                               <span>Client account</span>
                             </div>
-                            {viewerIsMainAdmin ? (
-                              <div className="admin-actions">
-                                <button type="button" onClick={() => startEditingAdminUser(managedUser, 'promote')}>
-                                  {editingAdminUserId === managedUser._id ? 'Close editor' : 'Promote'}
-                                </button>
-                              </div>
-                            ) : null}
-                            {editingAdminUserId === managedUser._id ? renderAdminUserEditor(managedUser) : null}
                           </article>
                         ))}
                       </div>
@@ -4403,10 +4392,6 @@ export default function App() {
                         <span>{profileForm.membershipNumber || 'Will appear after registration.'}</span>
                       </article>
                       <article className="booking-helper-card booking-helper-card-compact">
-                        <strong>Email status</strong>
-                        <span>{user?.emailVerified ? 'Verified' : 'Pending verification'}</span>
-                      </article>
-                      <article className="booking-helper-card booking-helper-card-compact">
                         <strong>Password changes</strong>
                         <span>Use your current password to confirm any email or password update.</span>
                       </article>
@@ -4454,16 +4439,6 @@ export default function App() {
                       <button type="submit" disabled={profileLoading}>
                         {profileLoading ? 'Saving...' : 'Save profile'}
                       </button>
-                      {!user?.emailVerified ? (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          onClick={handleRequestVerification}
-                          disabled={profileLoading}
-                        >
-                          {profileLoading ? 'Sending...' : 'Send verification email'}
-                        </button>
-                      ) : null}
                     </form>
                   </section>
 

@@ -426,14 +426,28 @@ function validateReviewPayload(payload = {}) {
 
 function validateAdminUserPayload(payload = {}) {
   const action = normalizeText(payload.action, 20).toLowerCase();
+  const name = normalizeText(payload.name, 80);
+  const email = normalizeText(payload.email, 160).toLowerCase();
   const adminTitle = normalizeText(payload.adminTitle, 80);
   const errors = [];
 
-  if (!['promote', 'update', 'demote'].includes(action)) {
+  if (!['create', 'update', 'demote'].includes(action)) {
     errors.push('A valid admin user action is required.');
   }
 
-  if (['promote', 'update'].includes(action) && adminTitle.length < 3) {
+  if (action === 'create' && name.length < 2) {
+    errors.push('Please provide the admin name.');
+  }
+
+  if (action === 'create' && !isValidEmail(email)) {
+    errors.push('Please provide a valid admin email.');
+  }
+
+  if (action === 'update' && email && !isValidEmail(email)) {
+    errors.push('Please provide a valid admin email.');
+  }
+
+  if (['create', 'update'].includes(action) && adminTitle.length < 3) {
     errors.push('Please provide a role title for this admin.');
   }
 
@@ -441,6 +455,8 @@ function validateAdminUserPayload(payload = {}) {
     errors,
     value: {
       action,
+      name,
+      email,
       adminTitle,
     },
   };

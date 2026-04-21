@@ -252,7 +252,7 @@ button {
   min-height: 0;
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 14px;
   flex-wrap: wrap;
 }
 
@@ -260,6 +260,10 @@ button {
 .admin-workspace-stat-card span {
   display: block;
   margin: 0;
+}
+
+.admin-workspace-stat-card strong {
+  margin-right: 2px;
 }
 
 .admin-workspace-stat-card span {
@@ -1162,17 +1166,6 @@ button {
   align-content: start;
 }
 
-.verification-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.verification-banner h2 {
-  font-size: 1.45rem;
-}
-
 .admin-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1502,6 +1495,7 @@ button {
   display: grid;
   gap: 16px;
   padding-bottom: 22px;
+  overflow: hidden;
 }
 
 .user-directory-grid {
@@ -1755,15 +1749,36 @@ button {
 
 .user-card .service-card-header {
   align-items: flex-start;
+  gap: 12px;
 }
 
 .user-card .service-card-header h3 {
   max-width: none;
   line-height: 1.08;
+  overflow-wrap: anywhere;
 }
 
 .user-card .service-card-header span {
-  white-space: nowrap;
+  white-space: normal;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.user-card .employee-meta span,
+.main-admin-spotlight .employee-meta span {
+  overflow-wrap: anywhere;
+}
+
+.user-card .admin-actions {
+  flex-wrap: wrap;
+}
+
+.add-admin-panel {
+  margin-bottom: 18px;
+}
+
+.add-admin-form {
+  margin-top: 16px;
 }
 
 .employee-availability-list {
@@ -2123,8 +2138,7 @@ button {
   .service-meta,
   .schedule-session-topline,
   .schedule-capacity-row,
-  .schedule-member-card,
-  .verification-banner {
+  .schedule-member-card {
     flex-direction: column;
     align-items: flex-start;
   }

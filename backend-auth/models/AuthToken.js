@@ -10,7 +10,7 @@ const authTokenSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['email-verification', 'password-reset'],
+      enum: ['password-reset'],
       required: true,
       index: true,
     },
@@ -23,7 +23,6 @@ const authTokenSchema = new mongoose.Schema(
     expiresAt: {
       type: Date,
       required: true,
-      index: true,
     },
     usedAt: {
       type: Date,
